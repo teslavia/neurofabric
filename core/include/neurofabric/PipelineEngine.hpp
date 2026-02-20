@@ -282,7 +282,20 @@ public:
 private:
     /* -- Provider Matching ------------------------------------------ */
 
-    ProviderSlot* find_provider(nf_affinity affinity) {
+    ProviderSlot* find_provider(nf_affinity affinity, uint32_t task_flags = 0) {
+        /*
+         * NF_TASK_REMOTE override: if the task carries the remote flag,
+         * force routing to the network proxy provider regardless of
+         * the declared affinity. This is the Step 2 evolution hook —
+         * the scheduler transparently bridges to a remote node.
+         */
+        if (task_flags & NF_TASK_REMOTE) {
+            for (auto& p : providers_) {
+                if (p.affinity == NF_AFFINITY_REMOTE) return &p;
+            }
+            /* No remote provider registered — fall through to local */
+        }
+
         // Exact match first
         for (auto& p : providers_) {
             if (p.affinity == affinity) return &p;
@@ -307,7 +320,8 @@ private:
         std::shared_ptr<std::promise<nf_status>> graph_promise)
     {
         auto& node = (*nodes)[tid];
-        ProviderSlot* prov = find_provider(node->desc.affinity);
+        ProviderSlot* prov = find_provider(node->desc.affinity,
+                                           node->desc.flags);
 
         pool_.submit([this, nodes, tid, remaining, graph_error,
                       graph_promise, prov]() -> nf_status {

@@ -50,6 +50,7 @@ option(NF_BUILD_TESTS    "Build unit tests"          ON)
 option(NF_BUILD_EXAMPLES "Build example programs"     ON)
 option(NF_PLUGIN_METAL   "Build Apple Metal plugin"   OFF)
 option(NF_PLUGIN_RKNN    "Build Rockchip RKNN plugin" OFF)
+option(NF_PLUGIN_NETWORK "Build Network Proxy plugin"  ON)
 
 # Auto-detect Apple Silicon
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
@@ -68,6 +69,10 @@ endif()
 
 if(NF_PLUGIN_RKNN)
     add_subdirectory(plugins/rknn)
+endif()
+
+if(NF_PLUGIN_NETWORK)
+    add_subdirectory(plugins/network)
 endif()
 
 if(NF_BUILD_TESTS)
