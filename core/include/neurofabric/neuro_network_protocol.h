@@ -131,6 +131,15 @@ typedef struct nf_frame_header {
 /* ------------------------------------------------------------------ */
 
 /** Verify no compiler inserted hidden padding. */
+#ifdef __cplusplus
+static_assert(sizeof(nf_tensor_wire) ==
+    1 + 1 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
+    "nf_tensor_wire has unexpected padding");
+
+static_assert(sizeof(nf_frame_header) ==
+    4 + 2 + 1 + 1 + 8 + 4 + NF_MAX_OP_NAME + 1 + 1 + 2 + 8 + 4 + 4,
+    "nf_frame_header has unexpected padding");
+#else
 _Static_assert(sizeof(nf_tensor_wire) ==
     1 + 1 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
     "nf_tensor_wire has unexpected padding");
@@ -138,6 +147,7 @@ _Static_assert(sizeof(nf_tensor_wire) ==
 _Static_assert(sizeof(nf_frame_header) ==
     4 + 2 + 1 + 1 + 8 + 4 + NF_MAX_OP_NAME + 1 + 1 + 2 + 8 + 4 + 4,
     "nf_frame_header has unexpected padding");
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  7. Endianness Helpers                                              */

@@ -124,9 +124,15 @@ public:
 
     /* Move-only */
     TensorView(TensorView&& o) noexcept
-        : buf_(o.buf_), ops_(o.ops_) {
+        : buf_(o.buf_), ops_(o.ops_),
+          slice_dim_(o.slice_dim_), slice_begin_(o.slice_begin_),
+          slice_end_(o.slice_end_), slice_stride_(o.slice_stride_) {
         o.buf_ = nullptr;
         o.ops_ = {};
+        o.slice_dim_ = 0;
+        o.slice_begin_ = 0;
+        o.slice_end_ = 0;
+        o.slice_stride_ = 0;
     }
 
     TensorView& operator=(TensorView&& o) noexcept {
@@ -134,8 +140,16 @@ public:
             release();
             buf_  = o.buf_;
             ops_  = o.ops_;
+            slice_dim_    = o.slice_dim_;
+            slice_begin_  = o.slice_begin_;
+            slice_end_    = o.slice_end_;
+            slice_stride_ = o.slice_stride_;
             o.buf_ = nullptr;
             o.ops_ = {};
+            o.slice_dim_ = 0;
+            o.slice_begin_ = 0;
+            o.slice_end_ = 0;
+            o.slice_stride_ = 0;
         }
         return *this;
     }

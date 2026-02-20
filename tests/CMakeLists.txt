@@ -57,3 +57,21 @@ if(NF_PLUGIN_METAL)
     )
     add_test(NAME silicon COMMAND nf_silicon_test)
 endif()
+
+if(NF_PLUGIN_RKNN)
+    add_executable(nf_rknn_silicon_test
+        rknn_silicon_test.cpp
+        ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+        ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+    )
+    target_link_libraries(nf_rknn_silicon_test PRIVATE nf_core nf_plugin_rknn)
+    target_include_directories(nf_rknn_silicon_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/src
+    )
+    if(NF_HAS_RKNN_SDK)
+        target_compile_definitions(nf_rknn_silicon_test PRIVATE NF_HAS_RKNN_SDK)
+        target_link_libraries(nf_rknn_silicon_test PRIVATE ${RKNN_RT})
+    endif()
+    add_test(NAME rknn_silicon COMMAND nf_rknn_silicon_test)
+endif()

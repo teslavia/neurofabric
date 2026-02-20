@@ -59,6 +59,12 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     message(STATUS "[NF] Apple Silicon detected — Metal plugin enabled (OBJCXX)")
 endif()
 
+# Auto-detect Linux aarch64 (Rock 5B+ / RK3588)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    set(NF_PLUGIN_RKNN ON CACHE BOOL "" FORCE)
+    message(STATUS "[NF] Linux aarch64 detected — RKNN plugin enabled")
+endif()
+
 # ------------------------------------------------------------------
 # Subdirectories
 # ------------------------------------------------------------------

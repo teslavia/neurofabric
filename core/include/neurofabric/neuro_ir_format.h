@@ -107,6 +107,19 @@ typedef struct nf_ir_node_desc {
 /*  4. Compile-time size assertions                                    */
 /* ------------------------------------------------------------------ */
 
+#ifdef __cplusplus
+static_assert(sizeof(nf_ir_header) ==
+    4 + 4 + 4 + 4 + 8 + 8 + 4 + 4,
+    "nf_ir_header has unexpected padding");
+
+static_assert(sizeof(nf_ir_tensor_desc) ==
+    4 + 1 + 1 + 1 + 1 + NF_MAX_DIMS * 8 + 8 + 8,
+    "nf_ir_tensor_desc has unexpected padding");
+
+static_assert(sizeof(nf_ir_node_desc) ==
+    4 + NF_MAX_OP_NAME + 4 + 4 + NF_IR_MAX_NODE_IO * 4 + NF_IR_MAX_NODE_IO * 4 + 4 + 4,
+    "nf_ir_node_desc has unexpected padding");
+#else
 _Static_assert(sizeof(nf_ir_header) ==
     4 + 4 + 4 + 4 + 8 + 8 + 4 + 4,
     "nf_ir_header has unexpected padding");
@@ -118,6 +131,7 @@ _Static_assert(sizeof(nf_ir_tensor_desc) ==
 _Static_assert(sizeof(nf_ir_node_desc) ==
     4 + NF_MAX_OP_NAME + 4 + 4 + NF_IR_MAX_NODE_IO * 4 + NF_IR_MAX_NODE_IO * 4 + 4 + 4,
     "nf_ir_node_desc has unexpected padding");
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  5. CRC Helper                                                      */

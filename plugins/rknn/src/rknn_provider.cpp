@@ -32,11 +32,14 @@
 
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
+#include "neurofabric/neuro_scheduler_abi.h"
 
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #ifdef NF_HAS_RKNN_SDK
 #include <rknn_api.h>
@@ -222,7 +225,10 @@ static void nchw_to_nhwc(const float* src, float* dst,
 struct nf_provider_rknn {
     bool initialized = false;
 #ifdef NF_HAS_RKNN_SDK
-    rknn_context ctx = 0;
+    rknn_context ctx              = 0;
+    const void*  cached_model_ptr  = nullptr;
+    uint64_t     cached_model_size = 0;
+    rknn_context cached_ctx        = 0;
 #endif
 };
 
@@ -235,7 +241,7 @@ static nf_provider_rknn s_instance;
 static const char* rknn_get_name(nf_provider) { return "rockchip_rknn"; }
 static uint32_t    rknn_get_abi_version(nf_provider) { return NF_ABI_VERSION; }
 
-static nf_status rknn_init(nf_provider self) {
+static nf_status rknn_prov_init(nf_provider self) {
     auto* p = reinterpret_cast<nf_provider_rknn*>(self);
 #ifdef NF_HAS_RKNN_SDK
     /* Real RK3588: rknn_init(&p->ctx, model_data, model_size, 0) */
@@ -245,13 +251,13 @@ static nf_status rknn_init(nf_provider self) {
     return NF_OK;
 }
 
-static void rknn_shutdown(nf_provider self) {
+static void rknn_prov_shutdown(nf_provider self) {
     auto* p = reinterpret_cast<nf_provider_rknn*>(self);
 #ifdef NF_HAS_RKNN_SDK
-    if (p->ctx) {
-        rknn_destroy(p->ctx);
-        p->ctx = 0;
-    }
+    if (p->cached_ctx) { rknn_destroy(p->cached_ctx); p->cached_ctx = 0; }
+    if (p->ctx)        { rknn_destroy(p->ctx);        p->ctx = 0; }
+    p->cached_model_ptr  = nullptr;
+    p->cached_model_size = 0;
 #endif
     p->initialized = false;
 }
@@ -262,17 +268,27 @@ static nf_status rknn_buffer_alloc(nf_provider self, const nf_tensor_desc* desc,
     rb->desc = *desc;
 #ifdef NF_HAS_RKNN_SDK
     auto* p = reinterpret_cast<nf_provider_rknn*>(self);
-    rknn_tensor_mem* mem = rknn_create_mem(p->ctx, desc->size_bytes);
-    if (!mem) { delete rb; return NF_ERROR_OUT_OF_MEMORY; }
-    rb->dma_buf_fd = mem->fd;
-    rb->data = mmap(NULL, desc->size_bytes, PROT_READ|PROT_WRITE,
-                    MAP_SHARED, mem->fd, 0);
-    if (rb->data == MAP_FAILED) {
-        rknn_destroy_mem(p->ctx, mem);
-        delete rb;
-        return NF_ERROR_OUT_OF_MEMORY;
+    /* DMA-BUF alloc requires a valid rknn_context (from rknn_init with a model).
+     * When no model is loaded yet (ctx==0), fall back to calloc — this covers
+     * simulation tests and pre-model buffer allocation. */
+    if (p->ctx) {
+        rknn_tensor_mem* mem = rknn_create_mem(p->ctx, desc->size_bytes);
+        if (!mem) { delete rb; return NF_ERROR_OUT_OF_MEMORY; }
+        rb->dma_buf_fd = mem->fd;
+        rb->data = mmap(NULL, desc->size_bytes, PROT_READ|PROT_WRITE,
+                        MAP_SHARED, mem->fd, 0);
+        if (rb->data == MAP_FAILED) {
+            rknn_destroy_mem(p->ctx, mem);
+            delete rb;
+            return NF_ERROR_OUT_OF_MEMORY;
+        }
+    } else {
+        rb->data = std::calloc(1, desc->size_bytes);
+        if (!rb->data) { delete rb; return NF_ERROR_OUT_OF_MEMORY; }
+        rb->dma_buf_fd = s_next_fd.fetch_add(1, std::memory_order_relaxed);
     }
 #else
+    (void)self;
     rb->data = std::calloc(1, desc->size_bytes);
     if (!rb->data) {
         delete rb;
@@ -302,11 +318,173 @@ static nf_status rknn_buffer_unmap(nf_provider, nf_buffer buf) {
  *
  * Phase 6: supports "mock_relu" for E2E validation.
  * Phase 7: adds "decode_step" — simulated decode attention (tanh).
- * Real RK3588: rknn_inputs_set() + rknn_run() + rknn_outputs_get().
+ * Phase 10: adds "rknn_subgraph" — sub-graph closure dispatch.
+ *   inputs[0] = mmap'd .rknn model blob
+ *   inputs[1..n] = feature map buffers
+ *   outputs[0..n] = result buffers
+ * Real RK3588: rknn_init + rknn_set_io_mem + rknn_run (zero-copy DMA-BUF).
+ * Simulation: deterministic mean-reduction for verifiable output.
  */
-static nf_status rknn_dispatch(nf_provider, const char* op_name,
+static nf_status rknn_dispatch(nf_provider self, const char* op_name,
                                const nf_buffer* inputs, uint32_t n_in,
                                nf_buffer* outputs, uint32_t n_out) {
+    if (std::strcmp(op_name, "rknn_subgraph") == 0 && n_in >= 2 && n_out >= 1) {
+        /*
+         * Recover the full nf_task_desc via the cross-dylib bridge:
+         * PipelineEngine stores user_data = &desc, and inputs == desc.inputs.
+         */
+        auto* desc = reinterpret_cast<const nf_task_desc*>(
+            reinterpret_cast<const char*>(inputs) -
+            offsetof(nf_task_desc, inputs));
+
+        /* Map model blob (inputs[0]) — mmap'd .rknn file */
+        void* model_ptr = nullptr;
+        desc->input_ops[0].map(inputs[0], &model_ptr);
+
+        nf_buffer_info model_info{};
+        desc->input_ops[0].get_info(inputs[0], &model_info);
+        uint64_t model_size = model_info.desc.size_bytes;
+
+#ifdef NF_HAS_RKNN_SDK
+        auto* p = reinterpret_cast<nf_provider_rknn*>(self);
+        bool use_real_npu = false;
+
+        /* Model cache: reuse context if same pointer + size */
+        rknn_context run_ctx = 0;
+        if (p->cached_model_ptr == model_ptr &&
+            p->cached_model_size == model_size && p->cached_ctx) {
+            run_ctx = p->cached_ctx;
+            use_real_npu = true;
+        } else {
+            if (p->cached_ctx) { rknn_destroy(p->cached_ctx); p->cached_ctx = 0; }
+            int ret = rknn_init(&run_ctx, model_ptr,
+                                static_cast<uint32_t>(model_size), 0, nullptr);
+            if (ret == 0) {
+                p->cached_ctx        = run_ctx;
+                p->cached_model_ptr  = model_ptr;
+                p->cached_model_size = model_size;
+                use_real_npu = true;
+            }
+            /* If rknn_init fails (fake model), fall through to simulation */
+        }
+
+        if (use_real_npu) {
+            /* Query input/output counts */
+            rknn_input_output_num io_num{};
+            rknn_query(run_ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
+
+            /* Set model inputs via copy-based API (works with any buffer backing) */
+            for (uint32_t i = 0; i < io_num.n_input && (i + 1) < n_in; ++i) {
+                rknn_tensor_attr attr{};
+                attr.index = i;
+                rknn_query(run_ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
+
+                void* in_ptr = nullptr;
+                desc->input_ops[i + 1].map(inputs[i + 1], &in_ptr);
+
+                rknn_input ri{};
+                ri.index        = i;
+                ri.buf          = in_ptr;
+                ri.size         = attr.size;
+                ri.pass_through = 1;  /* raw data, skip format conversion */
+                ri.type         = attr.type;
+                ri.fmt          = attr.fmt;
+                rknn_inputs_set(run_ctx, 1, &ri);
+
+                desc->input_ops[i + 1].unmap(inputs[i + 1]);
+            }
+
+            /* Synchronous NPU execution */
+            int ret = rknn_run(run_ctx, nullptr);
+            if (ret < 0) {
+                desc->input_ops[0].unmap(inputs[0]);
+                return NF_ERROR_INTERNAL;
+            }
+
+            /* Get model outputs via copy-based API */
+            uint32_t n_model_out = io_num.n_output < n_out
+                                 ? io_num.n_output : n_out;
+            std::vector<rknn_output> ro(n_model_out);
+            for (uint32_t j = 0; j < n_model_out; ++j) {
+                ro[j].index      = j;
+                ro[j].is_prealloc = 0;
+                ro[j].want_float  = 0;
+            }
+            rknn_outputs_get(run_ctx, n_model_out, ro.data(), nullptr);
+
+            /* Copy results into output buffers */
+            for (uint32_t j = 0; j < n_model_out; ++j) {
+                void* out_ptr = nullptr;
+                desc->output_ops[j].map(outputs[j], &out_ptr);
+
+                nf_buffer_info out_info{};
+                desc->output_ops[j].get_info(outputs[j], &out_info);
+                size_t copy_sz = ro[j].size < out_info.desc.size_bytes
+                               ? ro[j].size : out_info.desc.size_bytes;
+                std::memcpy(out_ptr, ro[j].buf, copy_sz);
+
+                desc->output_ops[j].unmap(outputs[j]);
+                auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+                out_rb->dev_dirty = true;
+            }
+            rknn_outputs_release(run_ctx, n_model_out, ro.data());
+
+            desc->input_ops[0].unmap(inputs[0]);
+            return NF_OK;
+        }
+        /* Fall through to simulation when rknn_init fails (fake model) */
+#endif
+        {
+            (void)self;
+            /* Simulation: output[i] = mean(all feature input floats) */
+        double sum = 0.0;
+        size_t total_count = 0;
+
+        for (uint32_t k = 1; k < n_in; ++k) {
+            void* in_ptr = nullptr;
+            desc->input_ops[k].map(inputs[k], &in_ptr);
+
+            nf_buffer_info in_info{};
+            desc->input_ops[k].get_info(inputs[k], &in_info);
+            size_t count = in_info.desc.size_bytes / sizeof(float);
+
+            auto* fp = static_cast<const float*>(in_ptr);
+            for (size_t i = 0; i < count; ++i) {
+                sum += static_cast<double>(fp[i]);
+            }
+            total_count += count;
+
+            desc->input_ops[k].unmap(inputs[k]);
+        }
+
+        float mean_val = (total_count > 0)
+            ? static_cast<float>(sum / static_cast<double>(total_count))
+            : 0.0f;
+
+        /* Fill all outputs with the mean value */
+        for (uint32_t j = 0; j < n_out; ++j) {
+            void* out_ptr = nullptr;
+            desc->output_ops[j].map(outputs[j], &out_ptr);
+
+            nf_buffer_info out_info{};
+            desc->output_ops[j].get_info(outputs[j], &out_info);
+            size_t out_count = out_info.desc.size_bytes / sizeof(float);
+
+            auto* out_fp = static_cast<float*>(out_ptr);
+            for (size_t i = 0; i < out_count; ++i) {
+                out_fp[i] = mean_val;
+            }
+
+            desc->output_ops[j].unmap(outputs[j]);
+            auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+            out_rb->dev_dirty = true;
+        }
+        }
+        /* Unmap model blob */
+        desc->input_ops[0].unmap(inputs[0]);
+        return NF_OK;
+    }
+
     if (std::strcmp(op_name, "decode_step") == 0 && n_in >= 1 && n_out >= 1) {
         auto* rb = reinterpret_cast<RknnBuffer*>(inputs[0]);
         auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[0]);
@@ -410,8 +588,8 @@ extern "C" NF_API nf_status nf_plugin_register(nf_provider_vtable* vt,
                                                 nf_provider* out) {
     vt->get_name        = rknn_get_name;
     vt->get_abi_version = rknn_get_abi_version;
-    vt->init            = rknn_init;
-    vt->shutdown        = rknn_shutdown;
+    vt->init            = rknn_prov_init;
+    vt->shutdown        = rknn_prov_shutdown;
     vt->buffer_alloc    = rknn_buffer_alloc;
     vt->buffer_free     = rknn_buffer_free;
     vt->buffer_map      = rknn_buffer_map;

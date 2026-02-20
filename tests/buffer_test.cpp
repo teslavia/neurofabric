@@ -9,10 +9,15 @@
 
 #include "neurofabric/TensorView.hpp"
 #include <atomic>
-#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+/* Always-execute check — works even with NDEBUG */
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
+#define CHECK_OK(call) CHECK((call) == NF_OK)
 
 /* ================================================================== */
 /*  Mock CPU Buffer Plugin (inline, for testing only)                  */
@@ -110,11 +115,11 @@ static void test_lifecycle() {
     nf_buffer buf  = reinterpret_cast<nf_buffer>(mb);
 
     // Retain → refcount 2
-    assert(ops.retain(buf) == 2);
+    CHECK(ops.retain(buf) == 2);
     // Release → refcount 1
-    assert(ops.release(buf) == 1);
+    CHECK(ops.release(buf) == 1);
     // Final release → freed (refcount 0)
-    assert(ops.release(buf) == 0);
+    CHECK(ops.release(buf) == 0);
     // mb is now freed — do not touch
 
     std::printf("  PASS: lifecycle (retain/release)\n");
@@ -132,18 +137,18 @@ static void test_map_unmap() {
     nf_buffer buf  = reinterpret_cast<nf_buffer>(mb);
 
     void* ptr = nullptr;
-    assert(ops.map(buf, &ptr) == NF_OK);
-    assert(ptr != nullptr);
+    CHECK_OK(ops.map(buf, &ptr));
+    CHECK(ptr != nullptr);
 
     // Write through mapped pointer
     auto* fp = static_cast<float*>(ptr);
     for (int i = 0; i < 16; ++i) fp[i] = static_cast<float>(i);
 
-    assert(ops.unmap(buf) == NF_OK);
+    CHECK_OK(ops.unmap(buf));
 
     // Double-map should fail in our mock
-    assert(ops.map(buf, &ptr) == NF_OK); // re-map after unmap is fine
-    assert(static_cast<float*>(ptr)[7] == 7.0f);
+    CHECK_OK(ops.map(buf, &ptr)); // re-map after unmap is fine
+    CHECK(static_cast<float*>(ptr)[7] == 7.0f);
     ops.unmap(buf);
 
     ops.release(buf);
@@ -164,28 +169,28 @@ static void test_tensor_view_raii() {
 
     {
         nf::TensorView tv(buf, ops);
-        assert(tv.valid());
-        assert(tv.domain() == NF_MEM_DOMAIN_CPU);
-        assert(tv.desc().ndim == 2);
+        CHECK(tv.valid());
+        CHECK(tv.domain() == NF_MEM_DOMAIN_CPU);
+        CHECK(tv.desc().ndim == 2);
 
         // Map via TensorView
         {
             auto mapped = tv.map<float>();
-            assert(mapped.valid());
-            assert(mapped.size() == 12);
+            CHECK(mapped.valid());
+            CHECK(mapped.size() == 12);
             mapped[0] = 42.0f;
             // MappedSpan unmaps on scope exit
         }
 
         // Cache ops (no-op on CPU, but must not crash)
-        assert(tv.flush() == NF_OK);
-        assert(tv.invalidate() == NF_OK);
+        CHECK_OK(tv.flush());
+        CHECK_OK(tv.invalidate());
 
         // Share (retain)
         {
             nf::TensorView shared = tv.share();
-            assert(shared.valid());
-            assert(shared.info().refcount == 2);
+            CHECK(shared.valid());
+            CHECK(shared.info().refcount == 2);
             // shared releases on scope exit → refcount back to 1
         }
 
@@ -212,14 +217,14 @@ static void test_slice() {
 
         // Slice rows [2, 5) along dim 0
         nf::TensorView sv = tv.slice(0, 2, 5);
-        assert(sv.valid());
-        assert(sv.is_slice());
-        assert(sv.slice_dim() == 0);
-        assert(sv.slice_begin() == 2);
-        assert(sv.slice_end() == 5);
+        CHECK(sv.valid());
+        CHECK(sv.is_slice());
+        CHECK(sv.slice_dim() == 0);
+        CHECK(sv.slice_begin() == 2);
+        CHECK(sv.slice_end() == 5);
 
         // Both tv and sv share the same backing buffer
-        assert(sv.info().refcount == 2);
+        CHECK(sv.info().refcount == 2);
 
         // sv releases on scope exit, then tv releases → freed
     }

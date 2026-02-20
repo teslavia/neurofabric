@@ -38,6 +38,7 @@
 /* POSIX sockets */
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -175,7 +176,11 @@ static bool send_all_s(int fd, const void* data, size_t len) {
     auto* p = static_cast<const uint8_t*>(data);
     size_t sent = 0;
     while (sent < len) {
-        auto n = ::send(fd, p + sent, static_cast<int>(len - sent), 0);
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        auto n = ::send(fd, p + sent, static_cast<int>(len - sent), flags);
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }
@@ -521,6 +526,7 @@ static void test_e2e_network_loopback() {
 /* ================================================================== */
 
 int main() {
+    signal(SIGPIPE, SIG_IGN);
     std::printf("e2e_pipeline_test: Phase 6 — Hardware & Network Validation\n");
     test_local_dag();
     test_e2e_network_loopback();
