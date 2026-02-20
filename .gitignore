@@ -1,0 +1,23 @@
+# Build
+build/
+cmake-build-*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled
+*.o
+*.d
+*.dylib
+*.so
+*.dll
+*.a
+*.lib
+
+# Claude
+.claude/
