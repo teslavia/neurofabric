@@ -163,6 +163,11 @@ static bool serialize_and_send(nf_provider_network* net,
             }
             wires[i].payload_bytes = nf_htole64(info.desc.size_bytes);
             total_payload += info.desc.size_bytes;
+
+            /* Populate layout tag for cross-ISA transport.
+             * Default to NCHW (Metal/Apple Silicon convention).
+             * Receiver checks this to decide if reordering is needed. */
+            wires[i].layout = nf_htole16(static_cast<uint16_t>(NF_LAYOUT_NCHW));
         }
     }
 

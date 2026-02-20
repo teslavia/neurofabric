@@ -29,3 +29,10 @@ target_include_directories(nf_e2e_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
 )
 add_test(NAME e2e COMMAND nf_e2e_test)
+
+add_executable(nf_split_inference_test split_inference_test.cpp)
+target_link_libraries(nf_split_inference_test PRIVATE nf_core)
+target_include_directories(nf_split_inference_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+)
+add_test(NAME split_inference COMMAND nf_split_inference_test)

@@ -64,7 +64,20 @@ typedef enum nf_proto_opcode {
 } nf_proto_opcode;
 
 /* ------------------------------------------------------------------ */
-/*  3. Tensor Wire Descriptor (packed, no padding)                     */
+/*  3. Layout Tags                                                     */
+/*     Semantic memory layout for cross-ISA tensor transport.          */
+/*     M4 Pro (Metal) defaults to NCHW; RK3588 (RKNN) expects NHWC.   */
+/*     The receiver uses this to decide whether reordering is needed.  */
+/* ------------------------------------------------------------------ */
+
+typedef enum nf_layout_type {
+    NF_LAYOUT_LINEAR = 0,   /**< Row-major contiguous (default, backward compat) */
+    NF_LAYOUT_NCHW   = 1,   /**< Batch x Channel x Height x Width               */
+    NF_LAYOUT_NHWC   = 2    /**< Batch x Height x Width x Channel               */
+} nf_layout_type;
+
+/* ------------------------------------------------------------------ */
+/*  4. Tensor Wire Descriptor (packed, no padding)                     */
 /*     One per tensor in the frame. Immediately precedes its payload.  */
 /* ------------------------------------------------------------------ */
 
@@ -73,14 +86,14 @@ typedef enum nf_proto_opcode {
 typedef struct nf_tensor_wire {
     uint8_t   dtype;                    /**< nf_dtype cast to u8       */
     uint8_t   ndim;                     /**< Number of dimensions      */
-    uint16_t  _reserved;
+    uint16_t  layout;                   /**< nf_layout_type cast to u16 */
     uint64_t  shape[NF_MAX_DIMS];       /**< Shape array               */
     uint64_t  strides[NF_MAX_DIMS];     /**< Byte strides (0=contig)   */
     uint64_t  payload_bytes;            /**< Exact byte count of data  */
 } nf_tensor_wire;
 
 /* ------------------------------------------------------------------ */
-/*  4. Frame Header (packed)                                           */
+/*  5. Frame Header (packed)                                           */
 /*     Fixed-size prefix for every network message.                    */
 /* ------------------------------------------------------------------ */
 
@@ -114,7 +127,7 @@ typedef struct nf_frame_header {
 #pragma pack(pop)
 
 /* ------------------------------------------------------------------ */
-/*  5. Compile-time size assertions                                    */
+/*  6. Compile-time size assertions                                    */
 /* ------------------------------------------------------------------ */
 
 /** Verify no compiler inserted hidden padding. */
@@ -127,7 +140,7 @@ _Static_assert(sizeof(nf_frame_header) ==
     "nf_frame_header has unexpected padding");
 
 /* ------------------------------------------------------------------ */
-/*  6. Endianness Helpers                                              */
+/*  7. Endianness Helpers                                              */
 /*     Wire format is little-endian. On big-endian hosts these swap.   */
 /*     ARM (Apple Silicon, RK3588) and x86 are all LE, so these are   */
 /*     typically no-ops — but correctness demands we define them.      */
@@ -150,7 +163,7 @@ _Static_assert(sizeof(nf_frame_header) ==
 #endif
 
 /* ------------------------------------------------------------------ */
-/*  7. CRC32 (Castagnoli / CRC-32C)                                    */
+/*  8. CRC32 (Castagnoli / CRC-32C)                                    */
 /*     Minimal software implementation. On Apple Silicon this can be   */
 /*     replaced with __builtin_arm_crc32c for hardware acceleration.   */
 /* ------------------------------------------------------------------ */
@@ -174,7 +187,7 @@ static inline uint32_t nf_frame_compute_crc(const nf_frame_header* hdr) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  8. Payload Transport Constants & State Machine                     */
+/*  9. Payload Transport Constants & State Machine                     */
 /*     Phase 5: chunked tensor payload transfer with timeouts.         */
 /* ------------------------------------------------------------------ */
 

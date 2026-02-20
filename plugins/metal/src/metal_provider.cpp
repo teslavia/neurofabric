@@ -25,8 +25,12 @@
 #include "neurofabric/neuro_buffer_abi.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 /* ================================================================== */
 /*  Metal Buffer — simulates MTLBuffer with StorageModeShared          */
@@ -39,6 +43,11 @@ struct MetalBuffer {
     nf_mem_domain         domain     = NF_MEM_DOMAIN_UNIFIED;
     bool                  mapped     = false;
     uint64_t              gpu_addr   = 0;         /**< Simulated GPU VA  */
+
+    /* Phase 7: GPU execution fence */
+    std::mutex              fence_mu;
+    std::condition_variable fence_cv;
+    std::atomic<bool>       gpu_done{true};   /**< false while GPU work pending */
 };
 
 static std::atomic<uint64_t> s_next_gpu_addr{0x10000000};
@@ -85,16 +94,24 @@ static nf_status metal_buf_unmap(nf_buffer self) {
     return NF_OK;
 }
 
-static nf_status metal_buf_cache_sync(nf_buffer, nf_cache_op,
+static nf_status metal_buf_cache_sync(nf_buffer self, nf_cache_op,
                                       uint64_t, uint64_t) {
     /*
-     * Apple Silicon unified memory is HARDWARE COHERENT.
-     * CPU and GPU share the same cache hierarchy.
-     * No explicit flush/invalidate needed — this is a no-op.
+     * Apple Silicon unified memory is HARDWARE COHERENT for CPU caches.
+     * However, GPU execution ordering is NOT automatic — a CPU thread
+     * can read a buffer before the GPU command finishes writing it.
      *
-     * Real Metal: MTLBlitCommandEncoder can synchronize managed
-     * resources, but StorageModeShared doesn't need it.
+     * Phase 7 fix: if a GPU dispatch is still in-flight on this buffer,
+     * block until the fence signals completion. Zero overhead when
+     * gpu_done is already true (the common case for sync ops).
      */
+    auto* mb = reinterpret_cast<MetalBuffer*>(self);
+    if (!mb->gpu_done.load(std::memory_order_acquire)) {
+        std::unique_lock<std::mutex> lk(mb->fence_mu);
+        mb->fence_cv.wait(lk, [&] {
+            return mb->gpu_done.load(std::memory_order_acquire);
+        });
+    }
     return NF_OK;
 }
 
@@ -141,6 +158,11 @@ static nf_buffer_ops make_metal_buf_ops() {
 struct nf_provider_metal {
     bool initialized = false;
     /* Real Metal: MTLDevice*, MTLCommandQueue* */
+
+    /* Phase 7: async GPU thread tracking */
+    std::mutex                pending_mu;
+    std::vector<std::thread>  gpu_threads;
+    std::atomic<uint32_t>     pending_count{0};
 };
 
 static nf_provider_metal s_instance;
@@ -151,6 +173,7 @@ static nf_provider_metal s_instance;
 
 static const char* metal_get_name(nf_provider) { return "apple_metal"; }
 static uint32_t    metal_get_abi_version(nf_provider) { return NF_ABI_VERSION; }
+static nf_status   metal_synchronize(nf_provider self); /* forward decl */
 
 static nf_status metal_init(nf_provider self) {
     auto* p = reinterpret_cast<nf_provider_metal*>(self);
@@ -164,6 +187,8 @@ static nf_status metal_init(nf_provider self) {
 
 static void metal_shutdown(nf_provider self) {
     auto* p = reinterpret_cast<nf_provider_metal*>(self);
+    /* Phase 7: drain all pending GPU work before teardown */
+    metal_synchronize(self);
     p->initialized = false;
 }
 
@@ -211,11 +236,70 @@ static nf_status metal_buffer_unmap(nf_provider, nf_buffer buf) {
  * dispatch — executes operators on the Metal "GPU".
  *
  * Phase 6: supports "mock_relu" dummy operator for E2E validation.
+ * Phase 7: adds "attention_prefill" with async GPU fence.
  * Real Metal: would encode a compute command into MTLCommandBuffer.
  */
-static nf_status metal_dispatch(nf_provider, const char* op_name,
+static nf_status metal_dispatch(nf_provider self, const char* op_name,
                                 const nf_buffer* inputs, uint32_t n_in,
                                 nf_buffer* outputs, uint32_t n_out) {
+    if (std::strcmp(op_name, "attention_prefill") == 0 && n_in >= 1 && n_out >= 2) {
+        /*
+         * Simulated attention prefill: produces K_Cache and V_Cache from input.
+         *   K = input * 0.5
+         *   V = input * -0.25
+         *
+         * Async: marks output buffers gpu_done=false, launches a thread
+         * that simulates GPU compute latency, then signals the fence.
+         */
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* k_mb   = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        auto* v_mb   = reinterpret_cast<MetalBuffer*>(outputs[1]);
+
+        /* Mark outputs as GPU-pending before launching thread */
+        k_mb->gpu_done.store(false, std::memory_order_release);
+        v_mb->gpu_done.store(false, std::memory_order_release);
+
+        auto* prov = reinterpret_cast<nf_provider_metal*>(self);
+        prov->pending_count.fetch_add(1, std::memory_order_relaxed);
+
+        /* Capture raw pointers for the GPU thread */
+        float* src   = static_cast<float*>(in_mb->data);
+        float* k_dst = static_cast<float*>(k_mb->data);
+        float* v_dst = static_cast<float*>(v_mb->data);
+        size_t count = in_mb->desc.size_bytes / sizeof(float);
+
+        std::thread gpu_thread([src, k_dst, v_dst, count, k_mb, v_mb, prov] {
+            /* Simulate GPU compute latency */
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+            for (size_t i = 0; i < count; ++i) {
+                k_dst[i] = src[i] * 0.5f;
+                v_dst[i] = src[i] * -0.25f;
+            }
+
+            /* Signal K fence */
+            {
+                std::lock_guard<std::mutex> lk(k_mb->fence_mu);
+                k_mb->gpu_done.store(true, std::memory_order_release);
+            }
+            k_mb->fence_cv.notify_all();
+
+            /* Signal V fence */
+            {
+                std::lock_guard<std::mutex> lk(v_mb->fence_mu);
+                v_mb->gpu_done.store(true, std::memory_order_release);
+            }
+            v_mb->fence_cv.notify_all();
+
+            prov->pending_count.fetch_sub(1, std::memory_order_relaxed);
+        });
+
+        std::lock_guard<std::mutex> lk(prov->pending_mu);
+        prov->gpu_threads.push_back(std::move(gpu_thread));
+
+        return NF_OK;
+    }
+
     if (std::strcmp(op_name, "mock_relu") == 0 && n_in >= 1) {
         /*
          * Mock ReLU: clamp negatives to zero, in-place on input buffer.
@@ -244,11 +328,18 @@ static nf_status metal_dispatch(nf_provider, const char* op_name,
     return NF_ERROR_UNSUPPORTED_OP;
 }
 
-static nf_status metal_synchronize(nf_provider) {
+static nf_status metal_synchronize(nf_provider self) {
     /*
-     * Real Metal: [commandBuffer waitUntilCompleted]
-     * Simulation: all ops are synchronous, nothing to wait for.
+     * Phase 7: drain all pending GPU threads.
+     * Real Metal: [commandBuffer waitUntilCompleted] on all in-flight buffers.
      */
+    auto* prov = reinterpret_cast<nf_provider_metal*>(self);
+    std::lock_guard<std::mutex> lk(prov->pending_mu);
+    for (auto& t : prov->gpu_threads) {
+        if (t.joinable()) t.join();
+    }
+    prov->gpu_threads.clear();
+    prov->pending_count.store(0, std::memory_order_relaxed);
     return NF_OK;
 }
 

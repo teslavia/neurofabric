@@ -30,6 +30,7 @@
 #include "neurofabric/neuro_buffer_abi.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -178,6 +179,21 @@ static nf_buffer_ops make_rknn_buf_ops() {
 }
 
 /* ================================================================== */
+/*  NCHW → NHWC Strided Reorder (Phase 7)                              */
+/*  RK3588 NPU expects NHWC layout; Metal sends NCHW.                  */
+/* ================================================================== */
+
+static void nchw_to_nhwc(const float* src, float* dst,
+                          uint64_t N, uint64_t C, uint64_t H, uint64_t W) {
+    for (uint64_t n = 0; n < N; ++n)
+        for (uint64_t c = 0; c < C; ++c)
+            for (uint64_t h = 0; h < H; ++h)
+                for (uint64_t w = 0; w < W; ++w)
+                    dst[n*H*W*C + h*W*C + w*C + c] =
+                        src[n*C*H*W + c*H*W + h*W + w];
+}
+
+/* ================================================================== */
 /*  Provider State                                                     */
 /* ================================================================== */
 
@@ -244,11 +260,36 @@ static nf_status rknn_buffer_unmap(nf_provider, nf_buffer buf) {
  * dispatch — executes operators on the RKNN NPU.
  *
  * Phase 6: supports "mock_relu" for E2E validation.
+ * Phase 7: adds "decode_step" — simulated decode attention (tanh).
  * Real RK3588: rknn_inputs_set() + rknn_run() + rknn_outputs_get().
  */
 static nf_status rknn_dispatch(nf_provider, const char* op_name,
                                const nf_buffer* inputs, uint32_t n_in,
                                nf_buffer* outputs, uint32_t n_out) {
+    if (std::strcmp(op_name, "decode_step") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* rb = reinterpret_cast<RknnBuffer*>(inputs[0]);
+        auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[0]);
+
+        /* Pre-NPU fence: flush CPU cache if dirty */
+        if (rb->cpu_dirty) {
+            rknn_buf_cache_sync(inputs[0], NF_CACHE_FLUSH, 0, 0);
+        }
+
+        /* Simulated decode attention: output[i] = tanh(input[i]) */
+        if (rb->desc.dtype == NF_DTYPE_F32) {
+            auto* src = static_cast<float*>(rb->data);
+            auto* dst = static_cast<float*>(out_rb->data);
+            size_t count = rb->desc.size_bytes / sizeof(float);
+            for (size_t i = 0; i < count; ++i) {
+                dst[i] = std::tanh(src[i]);
+            }
+        }
+
+        /* Mark NPU as having written */
+        out_rb->dev_dirty = true;
+        return NF_OK;
+    }
+
     if (std::strcmp(op_name, "mock_relu") == 0 && n_in >= 1) {
         auto* rb = reinterpret_cast<RknnBuffer*>(inputs[0]);
 
