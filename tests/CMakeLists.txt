@@ -49,6 +49,18 @@ target_include_directories(nf_ir_loader_test PRIVATE
 )
 add_test(NAME ir_loader COMMAND nf_ir_loader_test)
 
+add_executable(nf_nfir_e2e_test
+    nfir_e2e_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+)
+target_link_libraries(nf_nfir_e2e_test PRIVATE nf_core)
+target_include_directories(nf_nfir_e2e_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/src
+)
+add_test(NAME nfir_e2e COMMAND nf_nfir_e2e_test)
+
 if(NF_PLUGIN_METAL)
     add_executable(nf_silicon_test silicon_test.cpp)
     target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)

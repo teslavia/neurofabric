@@ -23,3 +23,8 @@ cmake-build-*/
 .claude/
 
 MEMORY.md
+tools/nf_compiler/__pycache__/
+__pycache__/
+*.pyc
+*.nfir
+**/docs/**
