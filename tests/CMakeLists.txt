@@ -22,3 +22,10 @@ target_include_directories(nf_scheduler_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
 )
 add_test(NAME scheduler COMMAND nf_scheduler_test)
+
+add_executable(nf_e2e_test e2e_pipeline_test.cpp)
+target_link_libraries(nf_e2e_test PRIVATE nf_core)
+target_include_directories(nf_e2e_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+)
+add_test(NAME e2e COMMAND nf_e2e_test)
