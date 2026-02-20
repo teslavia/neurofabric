@@ -36,3 +36,15 @@ target_include_directories(nf_split_inference_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
 )
 add_test(NAME split_inference COMMAND nf_split_inference_test)
+
+add_executable(nf_ir_loader_test
+    ir_loader_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+)
+target_link_libraries(nf_ir_loader_test PRIVATE nf_core)
+target_include_directories(nf_ir_loader_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/src
+)
+add_test(NAME ir_loader COMMAND nf_ir_loader_test)

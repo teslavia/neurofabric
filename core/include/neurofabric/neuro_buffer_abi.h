@@ -38,7 +38,8 @@ typedef enum nf_mem_domain {
     NF_MEM_DOMAIN_UNIFIED     = 1,  /**< CPU+GPU coherent (Apple Silicon)  */
     NF_MEM_DOMAIN_DEVICE      = 2,  /**< Device-only (discrete GPU VRAM)   */
     NF_MEM_DOMAIN_DMA_BUF     = 3,  /**< Linux DMA-BUF fd (RK3588 NPU)    */
-    NF_MEM_DOMAIN_EXTERNAL    = 4   /**< Foreign import (Vulkan, EGL, etc) */
+    NF_MEM_DOMAIN_EXTERNAL    = 4,  /**< Foreign import (Vulkan, EGL, etc) */
+    NF_MEM_DOMAIN_MMAP        = 5   /**< mmap'd read-only weight file      */
 } nf_mem_domain;
 
 /* ------------------------------------------------------------------ */
@@ -195,6 +196,9 @@ typedef struct nf_buffer_alloc_request {
     uint32_t        flags;          /**< Reserved for alignment hints etc */
     uint32_t        _reserved;
 } nf_buffer_alloc_request;
+
+/** Usage flag: buffer wraps mmap'd read-only weight data. */
+#define NF_BUFFER_USAGE_WEIGHT_MMAP  0x01u
 
 /* ------------------------------------------------------------------ */
 /*  6. Extended Provider VTable for Memory                             */

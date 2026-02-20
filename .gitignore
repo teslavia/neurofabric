@@ -21,3 +21,5 @@ cmake-build-*/
 
 # Claude
 .claude/
+
+MEMORY.md

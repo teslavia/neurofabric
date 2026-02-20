@@ -14,6 +14,8 @@ set(NF_CORE_SOURCES
     src/context.cpp
     src/dag.cpp
     src/plugin_loader.cpp
+    src/graph/mmap_buffer.cpp
+    src/graph/GraphBuilder.cpp
 )
 
 # Platform-specific dynamic library loading implementation.
