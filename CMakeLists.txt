@@ -54,8 +54,9 @@ option(NF_PLUGIN_NETWORK "Build Network Proxy plugin"  ON)
 
 # Auto-detect Apple Silicon
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    enable_language(OBJCXX)
     set(NF_PLUGIN_METAL ON CACHE BOOL "" FORCE)
-    message(STATUS "[NF] Apple Silicon detected — Metal plugin enabled")
+    message(STATUS "[NF] Apple Silicon detected — Metal plugin enabled (OBJCXX)")
 endif()
 
 # ------------------------------------------------------------------

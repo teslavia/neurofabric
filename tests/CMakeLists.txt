@@ -48,3 +48,12 @@ target_include_directories(nf_ir_loader_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/src
 )
 add_test(NAME ir_loader COMMAND nf_ir_loader_test)
+
+if(NF_PLUGIN_METAL)
+    add_executable(nf_silicon_test silicon_test.cpp)
+    target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_silicon_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME silicon COMMAND nf_silicon_test)
+endif()
