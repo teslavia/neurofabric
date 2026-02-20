@@ -1,12 +1,12 @@
 /**
  * @file rknn_silicon_test.cpp
- * @brief Phase 10 — Edge NPU Ignition & Sub-Graph Closure
+ * @brief Phase 11 — True Zero-Copy DMA-BUF & Distributed Router
  *
  * Two test paths:
  *   1. test_rknn_subgraph_simulation — always runs (all platforms)
  *      Exercises simulation dispatch: output = mean(input floats)
  *   2. test_rknn_subgraph_real_npu — only when NF_HAS_RKNN_SDK + model exists
- *      Exercises real NPU inference with .rknn model blob
+ *      Exercises real NPU inference with zero-copy rknn_set_io_mem
  *
  * Uses CHECK() macro (not assert) for Release safety.
  * Links RKNN plugin directly (not dlopen) — same pattern as silicon_test.
@@ -342,7 +342,28 @@ static void test_rknn_subgraph_real_npu() {
     CHECK_OK(st);
     ::close(model_fd);
 
-    /* Query model to determine input/output sizes */
+    /* ---- Step 1: Preload model via rknn_preload to set p->ctx ---- */
+    /* This ensures subsequent buffer_alloc gets real DMA-BUF fds. */
+    nf::PipelineEngine engine(2);
+    engine.register_provider(g_prov, g_vt, NF_AFFINITY_NPU);
+
+    {
+        uint32_t pre_gid = engine.create_graph();
+        nf_task_desc pre_td{};
+        std::strncpy(pre_td.op_name, "rknn_preload", NF_MAX_OP_NAME - 1);
+        pre_td.inputs[0]    = model_buf;
+        pre_td.input_ops[0] = model_ops;
+        pre_td.n_inputs     = 1;
+        pre_td.n_outputs    = 0;
+        pre_td.affinity     = NF_AFFINITY_NPU;
+        engine.add_task(pre_gid, pre_td);
+        auto pre_f = engine.submit(pre_gid);
+        CHECK_OK(pre_f.get());
+        engine.destroy_graph(pre_gid);
+        std::printf("    model preloaded (p->ctx set for DMA-BUF alloc)\n");
+    }
+
+    /* ---- Step 2: Probe model for IO sizes ---- */
     void* m_ptr = nullptr;
     CHECK_OK(model_ops.map(model_buf, &m_ptr));
 
@@ -355,7 +376,7 @@ static void test_rknn_subgraph_real_npu() {
     std::printf("    model inputs: %u, outputs: %u\n",
                 io_num.n_input, io_num.n_output);
 
-    /* Allocate input buffers matching model expectations */
+    /* ---- Step 3: Allocate buffers (now gets real DMA-BUF via rknn_create_mem) ---- */
     std::vector<nf_buffer> in_bufs;
     std::vector<nf_buffer_ops> in_ops_vec;
     for (uint32_t i = 0; i < io_num.n_input; ++i) {
@@ -373,7 +394,6 @@ static void test_rknn_subgraph_real_npu() {
         nf_buffer_ops ops{};
         nf_buffer buf = alloc_buf(d, &ops);
 
-        /* Fill with deterministic test pattern */
         void* ptr = nullptr;
         CHECK_OK(ops.map(buf, &ptr));
         std::memset(ptr, 128, attr.size);
@@ -383,7 +403,6 @@ static void test_rknn_subgraph_real_npu() {
         in_ops_vec.push_back(ops);
     }
 
-    /* Allocate output buffers */
     std::vector<nf_buffer> out_bufs;
     std::vector<nf_buffer_ops> out_ops_vec;
     for (uint32_t j = 0; j < io_num.n_output; ++j) {
@@ -407,10 +426,7 @@ static void test_rknn_subgraph_real_npu() {
     rknn_destroy(probe_ctx);
     CHECK_OK(model_ops.unmap(model_buf));
 
-    /* Build DAG: rknn_subgraph with model + inputs → outputs */
-    nf::PipelineEngine engine(2);
-    engine.register_provider(g_prov, g_vt, NF_AFFINITY_NPU);
-
+    /* ---- Step 4: Dispatch rknn_subgraph (zero-copy path) ---- */
     uint32_t gid = engine.create_graph();
     nf_task_desc td{};
     std::strncpy(td.op_name, "rknn_subgraph", NF_MAX_OP_NAME - 1);
@@ -439,7 +455,7 @@ static void test_rknn_subgraph_real_npu() {
     CHECK_OK(st);
 
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    std::printf("    NPU inference: %.2f ms\n", ms);
+    std::printf("    NPU inference (zero-copy): %.2f ms\n", ms);
 
     /* Verify: outputs are non-zero (NPU actually computed something) */
     for (uint32_t j = 0; j < io_num.n_output; ++j) {
@@ -465,7 +481,7 @@ static void test_rknn_subgraph_real_npu() {
     model_ops.release(model_buf);
     engine.destroy_graph(gid);
 
-    std::printf("  PASS: rknn_subgraph real NPU\n");
+    std::printf("  PASS: rknn_subgraph real NPU (zero-copy rknn_set_io_mem)\n");
 }
 #else
 static void test_rknn_subgraph_real_npu() {
@@ -478,7 +494,7 @@ static void test_rknn_subgraph_real_npu() {
 /* ================================================================== */
 
 int main() {
-    std::printf("rknn_silicon_test: Phase 10 — Edge NPU Ignition\n");
+    std::printf("rknn_silicon_test: Phase 11 — True Zero-Copy DMA-BUF\n");
 
     /* Register + init provider */
     nf_status st = nf_plugin_register(&g_vt, &g_prov);
@@ -498,6 +514,6 @@ int main() {
     test_rknn_subgraph_real_npu();
 
     g_vt.shutdown(g_prov);
-    std::printf("OK: all Phase 10 RKNN tests passed\n");
+    std::printf("OK: all Phase 11 RKNN tests passed\n");
     return 0;
 }

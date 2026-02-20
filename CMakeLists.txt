@@ -90,3 +90,8 @@ endif()
 if(NF_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+option(NF_BUILD_TOOLS "Build CLI tools" ON)
+if(NF_BUILD_TOOLS)
+    add_subdirectory(tools)
+endif()

@@ -65,6 +65,10 @@ struct RknnBuffer {
     bool                  mapped      = false;
     bool                  cpu_dirty   = false;     /**< CPU wrote, needs flush */
     bool                  dev_dirty   = false;     /**< NPU wrote, needs inv  */
+#ifdef NF_HAS_RKNN_SDK
+    rknn_tensor_mem*      sdk_mem     = nullptr;   /**< track for rknn_destroy_mem */
+    rknn_context          owner_ctx   = 0;         /**< context that allocated this mem */
+#endif
 };
 
 /* ================================================================== */
@@ -81,8 +85,11 @@ static uint32_t rknn_buf_release(nf_buffer self) {
     uint32_t prev = rb->refcount.fetch_sub(1, std::memory_order_acq_rel);
     if (prev == 1) {
 #ifdef NF_HAS_RKNN_SDK
-        munmap(rb->data, rb->desc.size_bytes);
-        close(rb->dma_buf_fd);
+        if (rb->sdk_mem && rb->owner_ctx) {
+            rknn_destroy_mem(rb->owner_ctx, rb->sdk_mem);
+        } else if (rb->data) {
+            std::free(rb->data);  /* calloc fallback path (ctx==0) */
+        }
 #else
         std::free(rb->data);
 #endif
@@ -254,8 +261,13 @@ static nf_status rknn_prov_init(nf_provider self) {
 static void rknn_prov_shutdown(nf_provider self) {
     auto* p = reinterpret_cast<nf_provider_rknn*>(self);
 #ifdef NF_HAS_RKNN_SDK
-    if (p->cached_ctx) { rknn_destroy(p->cached_ctx); p->cached_ctx = 0; }
-    if (p->ctx)        { rknn_destroy(p->ctx);        p->ctx = 0; }
+    /* cached_ctx and ctx may alias the same context — destroy once only */
+    if (p->cached_ctx) {
+        rknn_destroy(p->cached_ctx);
+        if (p->ctx == p->cached_ctx) p->ctx = 0;
+        p->cached_ctx = 0;
+    }
+    if (p->ctx) { rknn_destroy(p->ctx); p->ctx = 0; }
     p->cached_model_ptr  = nullptr;
     p->cached_model_size = 0;
 #endif
@@ -274,13 +286,21 @@ static nf_status rknn_buffer_alloc(nf_provider self, const nf_tensor_desc* desc,
     if (p->ctx) {
         rknn_tensor_mem* mem = rknn_create_mem(p->ctx, desc->size_bytes);
         if (!mem) { delete rb; return NF_ERROR_OUT_OF_MEMORY; }
+        rb->sdk_mem    = mem;
+        rb->owner_ctx  = p->ctx;
         rb->dma_buf_fd = mem->fd;
-        rb->data = mmap(NULL, desc->size_bytes, PROT_READ|PROT_WRITE,
-                        MAP_SHARED, mem->fd, 0);
-        if (rb->data == MAP_FAILED) {
-            rknn_destroy_mem(p->ctx, mem);
-            delete rb;
-            return NF_ERROR_OUT_OF_MEMORY;
+        /* SDK already mmap'd — use virt_addr directly, no double-mmap.
+         * Fallback to explicit mmap if SDK returns NULL virt_addr (older SDK). */
+        if (mem->virt_addr) {
+            rb->data = mem->virt_addr;
+        } else {
+            rb->data = mmap(NULL, desc->size_bytes, PROT_READ|PROT_WRITE,
+                            MAP_SHARED, mem->fd, 0);
+            if (rb->data == MAP_FAILED) {
+                rknn_destroy_mem(p->ctx, mem);
+                delete rb;
+                return NF_ERROR_OUT_OF_MEMORY;
+            }
         }
     } else {
         rb->data = std::calloc(1, desc->size_bytes);
@@ -328,6 +348,37 @@ static nf_status rknn_buffer_unmap(nf_provider, nf_buffer buf) {
 static nf_status rknn_dispatch(nf_provider self, const char* op_name,
                                const nf_buffer* inputs, uint32_t n_in,
                                nf_buffer* outputs, uint32_t n_out) {
+    /* ---- rknn_preload: load model, set p->ctx for DMA-BUF alloc ---- */
+    if (std::strcmp(op_name, "rknn_preload") == 0 && n_in >= 1) {
+        auto* desc = reinterpret_cast<const nf_task_desc*>(
+            reinterpret_cast<const char*>(inputs) -
+            offsetof(nf_task_desc, inputs));
+
+        void* model_ptr = nullptr;
+        desc->input_ops[0].map(inputs[0], &model_ptr);
+        nf_buffer_info model_info{};
+        desc->input_ops[0].get_info(inputs[0], &model_info);
+        uint64_t model_size = model_info.desc.size_bytes;
+
+#ifdef NF_HAS_RKNN_SDK
+        auto* p = reinterpret_cast<nf_provider_rknn*>(self);
+        if (p->cached_ctx) { rknn_destroy(p->cached_ctx); p->cached_ctx = 0; }
+        rknn_context ctx = 0;
+        int ret = rknn_init(&ctx, model_ptr,
+                            static_cast<uint32_t>(model_size), 0, nullptr);
+        if (ret == 0) {
+            p->ctx               = ctx;
+            p->cached_ctx        = ctx;
+            p->cached_model_ptr  = model_ptr;
+            p->cached_model_size = model_size;
+        }
+#else
+        (void)self; (void)model_size;
+#endif
+        desc->input_ops[0].unmap(inputs[0]);
+        return NF_OK;
+    }
+
     if (std::strcmp(op_name, "rknn_subgraph") == 0 && n_in >= 2 && n_out >= 1) {
         /*
          * Recover the full nf_task_desc via the cross-dylib bridge:
@@ -373,64 +424,102 @@ static nf_status rknn_dispatch(nf_provider self, const char* op_name,
             rknn_input_output_num io_num{};
             rknn_query(run_ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
 
-            /* Set model inputs via copy-based API (works with any buffer backing) */
+            /* Check if all IO buffers have real SDK-backed DMA-BUF fds.
+             * Buffers allocated before model load (ctx==0) get calloc + fake fds.
+             * Zero-copy requires real DMA-BUF fds from rknn_create_mem. */
+            bool can_zero_copy = true;
             for (uint32_t i = 0; i < io_num.n_input && (i + 1) < n_in; ++i) {
-                rknn_tensor_attr attr{};
-                attr.index = i;
-                rknn_query(run_ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
-
-                void* in_ptr = nullptr;
-                desc->input_ops[i + 1].map(inputs[i + 1], &in_ptr);
-
-                rknn_input ri{};
-                ri.index        = i;
-                ri.buf          = in_ptr;
-                ri.size         = attr.size;
-                ri.pass_through = 1;  /* raw data, skip format conversion */
-                ri.type         = attr.type;
-                ri.fmt          = attr.fmt;
-                rknn_inputs_set(run_ctx, 1, &ri);
-
-                desc->input_ops[i + 1].unmap(inputs[i + 1]);
+                auto* rb = reinterpret_cast<RknnBuffer*>(inputs[i + 1]);
+                if (!rb->sdk_mem) { can_zero_copy = false; break; }
             }
-
-            /* Synchronous NPU execution */
-            int ret = rknn_run(run_ctx, nullptr);
-            if (ret < 0) {
-                desc->input_ops[0].unmap(inputs[0]);
-                return NF_ERROR_INTERNAL;
-            }
-
-            /* Get model outputs via copy-based API */
             uint32_t n_model_out = io_num.n_output < n_out
                                  ? io_num.n_output : n_out;
-            std::vector<rknn_output> ro(n_model_out);
-            for (uint32_t j = 0; j < n_model_out; ++j) {
-                ro[j].index      = j;
-                ro[j].is_prealloc = 0;
-                ro[j].want_float  = 0;
+            if (can_zero_copy) {
+                for (uint32_t j = 0; j < n_model_out; ++j) {
+                    auto* rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+                    if (!rb->sdk_mem) { can_zero_copy = false; break; }
+                }
             }
-            rknn_outputs_get(run_ctx, n_model_out, ro.data(), nullptr);
 
-            /* Copy results into output buffers */
-            for (uint32_t j = 0; j < n_model_out; ++j) {
-                void* out_ptr = nullptr;
-                desc->output_ops[j].map(outputs[j], &out_ptr);
+            if (can_zero_copy) {
+                /* ---- Zero-copy dispatch via rknn_set_io_mem ---- */
+                std::vector<rknn_tensor_mem*> io_wrappers;
 
-                nf_buffer_info out_info{};
-                desc->output_ops[j].get_info(outputs[j], &out_info);
-                size_t copy_sz = ro[j].size < out_info.desc.size_bytes
-                               ? ro[j].size : out_info.desc.size_bytes;
-                std::memcpy(out_ptr, ro[j].buf, copy_sz);
+                for (uint32_t i = 0; i < io_num.n_input && (i + 1) < n_in; ++i) {
+                    rknn_tensor_attr attr{};
+                    attr.index = i;
+                    rknn_query(run_ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
+                    attr.pass_through = 1;
 
-                desc->output_ops[j].unmap(outputs[j]);
-                auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
-                out_rb->dev_dirty = true;
+                    auto* in_rb = reinterpret_cast<RknnBuffer*>(inputs[i + 1]);
+                    if (in_rb->cpu_dirty)
+                        rknn_buf_cache_sync(inputs[i + 1], NF_CACHE_FLUSH, 0, 0);
+
+                    rknn_tensor_mem* io_mem = rknn_create_mem_from_fd(
+                        run_ctx, in_rb->dma_buf_fd, in_rb->data,
+                        static_cast<uint32_t>(in_rb->desc.size_bytes), 0);
+                    if (io_mem) {
+                        rknn_set_io_mem(run_ctx, io_mem, &attr);
+                        io_wrappers.push_back(io_mem);
+                    }
+                }
+
+                for (uint32_t j = 0; j < n_model_out; ++j) {
+                    rknn_tensor_attr attr{};
+                    attr.index = j;
+                    rknn_query(run_ctx, RKNN_QUERY_OUTPUT_ATTR, &attr, sizeof(attr));
+                    attr.pass_through = 1;
+
+                    auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+                    rknn_tensor_mem* io_mem = rknn_create_mem_from_fd(
+                        run_ctx, out_rb->dma_buf_fd, out_rb->data,
+                        static_cast<uint32_t>(out_rb->desc.size_bytes), 0);
+                    if (io_mem) {
+                        rknn_set_io_mem(run_ctx, io_mem, &attr);
+                        io_wrappers.push_back(io_mem);
+                    }
+                }
+
+                int ret = rknn_run(run_ctx, nullptr);
+
+                for (auto* w : io_wrappers)
+                    rknn_destroy_mem(run_ctx, w);
+
+                if (ret < 0) {
+                    desc->input_ops[0].unmap(inputs[0]);
+                    return NF_ERROR_INTERNAL;
+                }
+
+                for (uint32_t j = 0; j < n_model_out; ++j) {
+                    rknn_buf_cache_sync(outputs[j], NF_CACHE_INVALIDATE, 0, 0);
+                    auto* out_rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+                    out_rb->dev_dirty = true;
+                }
+
+                desc->input_ops[0].unmap(inputs[0]);
+                return NF_OK;
             }
-            rknn_outputs_release(run_ctx, n_model_out, ro.data());
 
+            /* ---- FATAL: Zero-copy is mandatory on real NPU ---- */
+            /* All IO buffers MUST have real DMA-BUF fds from rknn_create_mem.
+             * If you hit this, the caller allocated buffers before model load
+             * (ctx==0). Fix: dispatch "rknn_preload" first to set p->ctx,
+             * then allocate buffers, then dispatch "rknn_subgraph". */
+            std::fprintf(stderr,
+                "FATAL: rknn_subgraph requires DMA-BUF backed buffers (sdk_mem != NULL).\n"
+                "  Allocate buffers AFTER model preload to get real CMA DMA-BUF fds.\n");
+            for (uint32_t i = 0; i < io_num.n_input && (i + 1) < n_in; ++i) {
+                auto* rb = reinterpret_cast<RknnBuffer*>(inputs[i + 1]);
+                std::fprintf(stderr, "  input[%u]: sdk_mem=%p fd=%d\n",
+                             i, (void*)rb->sdk_mem, rb->dma_buf_fd);
+            }
+            for (uint32_t j = 0; j < n_model_out; ++j) {
+                auto* rb = reinterpret_cast<RknnBuffer*>(outputs[j]);
+                std::fprintf(stderr, "  output[%u]: sdk_mem=%p fd=%d\n",
+                             j, (void*)rb->sdk_mem, rb->dma_buf_fd);
+            }
             desc->input_ops[0].unmap(inputs[0]);
-            return NF_OK;
+            return NF_ERROR_INVALID_ARG;
         }
         /* Fall through to simulation when rknn_init fails (fake model) */
 #endif
