@@ -7,6 +7,7 @@
 
 add_library(nf_plugin_network SHARED
     src/network_provider.cpp
+    src/payload_serializer.cpp
 )
 
 target_include_directories(nf_plugin_network PRIVATE

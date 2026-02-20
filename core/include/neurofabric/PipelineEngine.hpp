@@ -329,11 +329,22 @@ private:
             nf_status st = NF_OK;
 
             if (prov && prov->vtable.dispatch) {
+                /*
+                 * Set user_data to point to the full task descriptor.
+                 * The network plugin reads this to access buffer_ops
+                 * (input_ops/output_ops) for zero-copy tensor transport.
+                 * This bridges the Phase 1 C-ABI dispatch signature
+                 * (which lacks ops) with the Phase 5 payload path.
+                 */
+                node->desc.user_data = &node->desc;
+
                 st = prov->vtable.dispatch(
                     prov->handle,
                     node->desc.op_name,
                     node->desc.inputs,  node->desc.n_inputs,
                     node->desc.outputs, node->desc.n_outputs);
+
+                node->desc.user_data = nullptr;
             }
 
             node->result.store(st, std::memory_order_release);

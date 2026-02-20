@@ -22,12 +22,14 @@
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
 #include "neurofabric/neuro_network_protocol.h"
+#include "payload_serializer.h"
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -57,6 +59,7 @@
 struct PendingTask {
     uint64_t                task_id = 0;
     nf_buffer*              outputs = nullptr;
+    nf_buffer_ops*          output_ops = nullptr;
     uint32_t                n_outputs = 0;
     std::atomic<bool>       completed{false};
     nf_status               result = NF_OK;
@@ -79,6 +82,14 @@ struct nf_provider_network {
 
     std::mutex              pending_mu;
     std::unordered_map<uint64_t, std::shared_ptr<PendingTask>> pending;
+
+    /**
+     * Local memory provider — used by the recv path to allocate
+     * hardware-native buffers for incoming tensor payloads.
+     * Set via nf_plugin_register_mem or auto-detected.
+     */
+    nf_provider             local_mem_provider = nullptr;
+    nf_provider_mem_vtable  local_mem_vt{};
 };
 
 static nf_provider_network g_net_provider;
@@ -123,14 +134,38 @@ static bool recv_all(socket_t s, void* data, size_t len) {
 }
 
 /* ================================================================== */
-/*  Serialization: task_desc + buffers → wire frames                   */
+/*  Serialization: task_desc + buffers → wire frames + payload         */
+/*  Phase 5: real zero-copy path via payload_serializer.               */
 /* ================================================================== */
 
 static bool serialize_and_send(nf_provider_network* net,
                                uint64_t task_id,
                                const char* op_name,
                                const nf_buffer* inputs,
+                               const nf_buffer_ops* input_ops,
                                uint32_t n_in) {
+    /* -- Build tensor wire descriptors from buffer metadata ---------- */
+    std::vector<nf_tensor_wire> wires(n_in);
+    uint64_t total_payload = 0;
+
+    for (uint32_t i = 0; i < n_in; ++i) {
+        std::memset(&wires[i], 0, sizeof(nf_tensor_wire));
+
+        if (input_ops[i].get_info) {
+            nf_buffer_info info{};
+            input_ops[i].get_info(inputs[i], &info);
+
+            wires[i].dtype = static_cast<uint8_t>(info.desc.dtype);
+            wires[i].ndim  = static_cast<uint8_t>(info.desc.ndim);
+            for (uint8_t d = 0; d < info.desc.ndim && d < NF_MAX_DIMS; ++d) {
+                wires[i].shape[d]   = nf_htole64(info.desc.shape[d]);
+                wires[i].strides[d] = nf_htole64(info.desc.strides[d]);
+            }
+            wires[i].payload_bytes = nf_htole64(info.desc.size_bytes);
+            total_payload += info.desc.size_bytes;
+        }
+    }
+
     /* -- Build frame header ----------------------------------------- */
     nf_frame_header hdr{};
     hdr.magic   = nf_htole32(NF_PROTO_MAGIC);
@@ -142,53 +177,42 @@ static bool serialize_and_send(nf_provider_network* net,
     std::strncpy(hdr.op_name, op_name, NF_MAX_OP_NAME - 1);
     hdr.n_input_tensors  = static_cast<uint8_t>(n_in);
     hdr.n_output_tensors = 0;
-
-    /* -- Build tensor wire descriptors ------------------------------ */
-    /* For Phase 4 skeleton, we send tensor metadata only.             */
-    /* Full payload streaming will be added when buffer map is wired.  */
-    std::vector<nf_tensor_wire> wires(n_in);
-    uint64_t total_payload = 0;
-
-    for (uint32_t i = 0; i < n_in; ++i) {
-        /* In a full implementation, we'd call buffer_ops.get_info()   */
-        /* and buffer_ops.map() to read the actual tensor data.        */
-        /* For now, wire descriptors carry shape metadata.             */
-        std::memset(&wires[i], 0, sizeof(nf_tensor_wire));
-        wires[i].dtype = 0;
-        wires[i].ndim  = 0;
-        wires[i].payload_bytes = 0;
-        total_payload += wires[i].payload_bytes;
-    }
-
     hdr.total_payload_bytes = nf_htole64(total_payload);
     hdr.header_crc32 = nf_htole32(nf_frame_compute_crc(&hdr));
 
-    /* -- Send: header, then tensor descriptors ---------------------- */
+    /* -- Send: header ----------------------------------------------- */
     if (!send_all(net->sock, &hdr, sizeof(hdr))) return false;
+
+    /* -- Send: tensor descriptors ----------------------------------- */
     for (uint32_t i = 0; i < n_in; ++i) {
         if (!send_all(net->sock, &wires[i], sizeof(nf_tensor_wire)))
             return false;
     }
 
-    /* -- Send: tensor payloads (placeholder for zero-copy path) ----- */
-    /* When buffer map is wired:                                       */
-    /*   void* ptr; ops.map(buf, &ptr);                                */
-    /*   send_all(net->sock, ptr, wire.payload_bytes);                 */
-    /*   ops.unmap(buf);                                               */
+    /* -- Send: tensor payloads (zero-copy via mapped VA) ------------ */
+    for (uint32_t i = 0; i < n_in; ++i) {
+        nf_status st = nf_send_tensor_payload(
+            static_cast<int>(net->sock),
+            inputs[i],
+            &input_ops[i],
+            0 /* default timeout */);
+        if (st != NF_OK) return false;
+    }
 
     return true;
 }
 
 /* ================================================================== */
-/*  IO Thread: receives responses from remote node                     */
+/*  IO Thread: receives responses with tensor payloads                 */
+/*  Phase 5: allocates local buffers, receives directly into them.     */
 /* ================================================================== */
 
 static void io_recv_loop(nf_provider_network* net) {
     while (net->running.load(std::memory_order_relaxed)) {
+        /* ---- Receive frame header ---- */
         nf_frame_header resp{};
         if (!recv_all(net->sock, &resp, sizeof(resp))) {
             if (net->running.load(std::memory_order_relaxed)) {
-                /* Connection lost — mark all pending as failed */
                 std::lock_guard<std::mutex> lk(net->pending_mu);
                 for (auto& [id, pt] : net->pending) {
                     pt->result = NF_ERROR_DEVICE_LOST;
@@ -200,37 +224,154 @@ static void io_recv_loop(nf_provider_network* net) {
             return;
         }
 
-        /* Validate */
+        /* Validate magic */
         uint32_t magic = nf_le32toh(resp.magic);
         if (magic != NF_PROTO_MAGIC) continue;
 
         uint64_t tid = nf_le64toh(resp.task_id);
+        uint8_t n_out = resp.n_output_tensors;
 
-        /* Skip tensor descriptors + payload for now */
-        uint64_t skip = nf_le64toh(resp.total_payload_bytes);
-        skip += resp.n_output_tensors * sizeof(nf_tensor_wire);
-        if (skip > 0) {
-            std::vector<uint8_t> discard(skip);
-            recv_all(net->sock, discard.data(), skip);
-        }
-
-        /* Resolve pending task */
-        std::shared_ptr<PendingTask> pt;
-        {
-            std::lock_guard<std::mutex> lk(net->pending_mu);
-            auto it = net->pending.find(tid);
-            if (it != net->pending.end()) {
-                pt = it->second;
-                net->pending.erase(it);
+        /* ---- Receive tensor wire descriptors ---- */
+        std::vector<nf_tensor_wire> out_wires(n_out);
+        for (uint8_t i = 0; i < n_out; ++i) {
+            if (!recv_all(net->sock, &out_wires[i], sizeof(nf_tensor_wire))) {
+                /* Connection lost mid-descriptor */
+                goto conn_lost;
             }
         }
 
-        if (pt) {
-            pt->result = (resp.opcode == NF_OP_TASK_COMPLETE)
-                         ? NF_OK : NF_ERROR_INTERNAL;
-            pt->completed.store(true, std::memory_order_release);
-            pt->cv.notify_all();
+        /* ---- Find pending task ---- */
+        {
+            std::shared_ptr<PendingTask> pt;
+            {
+                std::lock_guard<std::mutex> lk(net->pending_mu);
+                auto it = net->pending.find(tid);
+                if (it != net->pending.end()) {
+                    pt = it->second;
+                }
+            }
+
+            if (resp.opcode == NF_OP_TASK_COMPLETE && pt && n_out > 0) {
+                /* ---- Receive tensor payloads into pre-allocated buffers ---- */
+                nf_status recv_st = NF_OK;
+
+                for (uint8_t i = 0; i < n_out && i < pt->n_outputs; ++i) {
+                    uint64_t payload_bytes = nf_le64toh(out_wires[i].payload_bytes);
+
+                    if (payload_bytes == 0) continue;
+
+                    /*
+                     * If the caller pre-allocated output buffers, receive
+                     * directly into them (zero-copy recv path).
+                     * Otherwise, allocate via the local memory provider.
+                     */
+                    if (pt->outputs && pt->outputs[i] &&
+                        pt->output_ops && pt->output_ops[i].map) {
+                        /* Direct recv into caller's buffer */
+                        nf_status st = nf_recv_tensor_payload(
+                            static_cast<int>(net->sock),
+                            pt->outputs[i],
+                            &pt->output_ops[i],
+                            &out_wires[i],
+                            0);
+                        if (st != NF_OK) recv_st = st;
+                    } else if (net->local_mem_vt.alloc && net->local_mem_provider) {
+                        /* Allocate a local hardware buffer, recv into it */
+                        nf_tensor_desc desc{};
+                        desc.dtype = static_cast<nf_dtype>(out_wires[i].dtype);
+                        desc.ndim  = out_wires[i].ndim;
+                        for (uint8_t d = 0; d < desc.ndim && d < NF_MAX_DIMS; ++d) {
+                            desc.shape[d]   = nf_le64toh(out_wires[i].shape[d]);
+                            desc.strides[d] = nf_le64toh(out_wires[i].strides[d]);
+                        }
+                        desc.size_bytes = payload_bytes;
+
+                        nf_buffer_alloc_request req{};
+                        req.desc      = desc;
+                        req.preferred = NF_MEM_DOMAIN_CPU;
+
+                        nf_buffer new_buf = nullptr;
+                        nf_buffer_ops new_ops{};
+                        nf_status ast = net->local_mem_vt.alloc(
+                            net->local_mem_provider, &req, &new_ops, &new_buf);
+
+                        if (ast == NF_OK && new_buf) {
+                            nf_status st = nf_recv_tensor_payload(
+                                static_cast<int>(net->sock),
+                                new_buf, &new_ops, &out_wires[i], 0);
+                            if (st != NF_OK) {
+                                recv_st = st;
+                                if (new_ops.release) new_ops.release(new_buf);
+                            } else if (pt->outputs && i < pt->n_outputs) {
+                                pt->outputs[i]    = new_buf;
+                                pt->output_ops[i] = new_ops;
+                            }
+                        } else {
+                            recv_st = NF_ERROR_OUT_OF_MEMORY;
+                        }
+                    } else {
+                        /* No buffer and no allocator — skip payload */
+                        std::vector<uint8_t> discard(payload_bytes);
+                        recv_all(net->sock, discard.data(),
+                                 static_cast<size_t>(payload_bytes));
+                    }
+                }
+
+                /* Skip any extra output tensors beyond what caller expected */
+                for (uint8_t i = pt->n_outputs; i < n_out; ++i) {
+                    uint64_t skip = nf_le64toh(out_wires[i].payload_bytes);
+                    if (skip > 0) {
+                        std::vector<uint8_t> discard(skip);
+                        recv_all(net->sock, discard.data(),
+                                 static_cast<size_t>(skip));
+                    }
+                }
+
+                pt->result = recv_st;
+            } else if (resp.opcode == NF_OP_TASK_ERROR) {
+                /* Error response — skip any payload */
+                uint64_t skip = nf_le64toh(resp.total_payload_bytes);
+                if (skip > 0) {
+                    std::vector<uint8_t> discard(skip);
+                    recv_all(net->sock, discard.data(),
+                             static_cast<size_t>(skip));
+                }
+                if (pt) pt->result = NF_ERROR_INTERNAL;
+            } else {
+                /* Unknown opcode or no pending task — skip payload */
+                uint64_t skip = nf_le64toh(resp.total_payload_bytes);
+                if (skip > 0) {
+                    std::vector<uint8_t> discard(skip);
+                    recv_all(net->sock, discard.data(),
+                             static_cast<size_t>(skip));
+                }
+            }
+
+            /* Signal completion */
+            if (pt) {
+                if (pt->result == NF_OK && resp.opcode == NF_OP_TASK_COMPLETE) {
+                    pt->result = NF_OK;
+                }
+                pt->completed.store(true, std::memory_order_release);
+                pt->cv.notify_all();
+
+                std::lock_guard<std::mutex> lk(net->pending_mu);
+                net->pending.erase(tid);
+            }
         }
+        continue;
+
+conn_lost:
+        if (net->running.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lk(net->pending_mu);
+            for (auto& [id, pt] : net->pending) {
+                pt->result = NF_ERROR_DEVICE_LOST;
+                pt->completed.store(true, std::memory_order_release);
+                pt->cv.notify_all();
+            }
+            net->pending.clear();
+        }
+        return;
     }
 }
 
@@ -340,36 +481,75 @@ static nf_status net_buffer_unmap(nf_provider, nf_buffer) {
 }
 
 /**
- * dispatch() — the critical path.
+ * dispatch() — the critical data path.
  *
- * Serializes the task into wire format, sends it, and BLOCKS until
- * the remote node responds. The PipelineEngine calls this from its
- * thread pool, so blocking here does NOT stall the scheduler —
- * other ready tasks continue dispatching on other pool threads.
+ * Phase 5: Full zero-copy tensor transport.
  *
- * For fully non-blocking IO (Phase 4+), this can be refactored to
- * return immediately and use an eventfd/kqueue callback to signal
- * the graph's remaining counter.
+ * The nf_provider_vtable::dispatch signature only carries nf_buffer*
+ * arrays (no ops). The network plugin needs buffer_ops for map/unmap.
+ *
+ * Solution: the PipelineEngine sets task_desc.user_data = &task_desc
+ * before calling dispatch. We recover the full descriptor (with
+ * input_ops/output_ops) by scanning the inputs array to find the
+ * matching task_desc. This is pure C-ABI — no thread-locals, no
+ * cross-dylib symbol resolution.
  */
 static nf_status net_dispatch(nf_provider self,
                               const char* op_name,
                               const nf_buffer* inputs, uint32_t n_in,
-                              nf_buffer* /*outputs*/, uint32_t /*n_out*/) {
+                              nf_buffer* outputs, uint32_t n_out) {
     auto* net = reinterpret_cast<nf_provider_network*>(self);
     if (net->sock == NF_INVALID_SOCKET) return NF_ERROR_DEVICE_LOST;
 
     uint64_t tid = net->next_task_id.fetch_add(1, std::memory_order_relaxed);
 
-    /* Register pending task */
+    /* Register pending task with output buffer info */
     auto pt = std::make_shared<PendingTask>();
-    pt->task_id = tid;
+    pt->task_id   = tid;
+    pt->outputs   = outputs;
+    pt->n_outputs = n_out;
+
+    /*
+     * Recover the full task descriptor via user_data.
+     * The PipelineEngine sets desc.user_data = &desc before dispatch.
+     * We scan for a task_desc whose inputs array matches our inputs ptr.
+     */
+    const nf_buffer_ops* in_ops = nullptr;
+    const nf_task_desc* td = nullptr;
+
+    /* The engine passes inputs = desc.inputs, so we can recover desc
+       by pointer arithmetic: desc is at (inputs - offsetof(nf_task_desc, inputs)).
+       But safer: the engine also sets user_data on the desc. We need to
+       find it. Since inputs points into desc.inputs, desc starts at a
+       known offset before it. */
+    {
+        /* inputs points to desc.inputs[0]. Recover desc pointer. */
+        const auto* candidate = reinterpret_cast<const nf_task_desc*>(
+            reinterpret_cast<const char*>(inputs) -
+            offsetof(nf_task_desc, inputs));
+        if (candidate->user_data == candidate) {
+            td = candidate;
+            in_ops = td->input_ops;
+            pt->output_ops = const_cast<nf_buffer_ops*>(td->output_ops);
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lk(net->pending_mu);
         net->pending[tid] = pt;
     }
 
-    /* Serialize and send */
-    if (!serialize_and_send(net, tid, op_name, inputs, n_in)) {
+    /* Serialize and send with real payload */
+    bool ok;
+    if (in_ops) {
+        ok = serialize_and_send(net, tid, op_name, inputs, in_ops, n_in);
+    } else {
+        /* Fallback: no ops available, send metadata only */
+        static const nf_buffer_ops empty_ops[NF_MAX_TASK_INPUTS]{};
+        ok = serialize_and_send(net, tid, op_name, inputs, empty_ops, n_in);
+    }
+
+    if (!ok) {
         std::lock_guard<std::mutex> lk(net->pending_mu);
         net->pending.erase(tid);
         return NF_ERROR_DEVICE_LOST;

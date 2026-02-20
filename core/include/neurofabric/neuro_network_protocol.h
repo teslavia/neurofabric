@@ -173,6 +173,43 @@ static inline uint32_t nf_frame_compute_crc(const nf_frame_header* hdr) {
     return nf_crc32c_update(0, (const uint8_t*)hdr, crc_len);
 }
 
+/* ------------------------------------------------------------------ */
+/*  8. Payload Transport Constants & State Machine                     */
+/*     Phase 5: chunked tensor payload transfer with timeouts.         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Chunk size for large tensor transfers.
+ * 256 KB balances syscall overhead vs. memory pressure on edge nodes.
+ * Tunable per deployment via NF_CHUNK_SIZE env var at init time.
+ */
+#define NF_PAYLOAD_CHUNK_SIZE  ((uint64_t)(256 * 1024))
+
+/** Default socket IO timeout in milliseconds. */
+#define NF_SOCKET_TIMEOUT_MS   30000
+
+/** Transfer state machine — tracks progress of a multi-chunk payload. */
+typedef enum nf_xfer_state {
+    NF_XFER_IDLE       = 0,  /**< No transfer in progress             */
+    NF_XFER_HEADER     = 1,  /**< Sending/receiving frame header      */
+    NF_XFER_TENSOR_DESC= 2,  /**< Sending/receiving tensor descriptors*/
+    NF_XFER_PAYLOAD    = 3,  /**< Streaming tensor payload chunks     */
+    NF_XFER_COMPLETE   = 4,  /**< Transfer finished successfully      */
+    NF_XFER_ERROR      = 5   /**< Transfer failed                     */
+} nf_xfer_state;
+
+/**
+ * Payload transfer progress — used by both sender and receiver
+ * to track multi-chunk streaming state.
+ */
+typedef struct nf_xfer_progress {
+    nf_xfer_state state;
+    uint64_t      total_bytes;       /**< Total payload to transfer    */
+    uint64_t      transferred_bytes; /**< Bytes completed so far       */
+    uint32_t      tensor_index;      /**< Current tensor being xferred */
+    uint32_t      n_tensors;         /**< Total tensors in this frame  */
+} nf_xfer_progress;
+
 #ifdef __cplusplus
 }
 #endif
