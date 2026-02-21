@@ -83,9 +83,10 @@ typedef enum nf_affinity {
 /*     Fully describes one compute node before it enters the DAG.      */
 /* ------------------------------------------------------------------ */
 
-#define NF_MAX_TASK_INPUTS  16
-#define NF_MAX_TASK_OUTPUTS 8
-#define NF_MAX_OP_NAME      64
+#define NF_MAX_TASK_INPUTS      16
+#define NF_MAX_TASK_OUTPUTS     8
+#define NF_MAX_OP_NAME          64
+#define NF_MAX_PUSH_CONSTANTS   64
 
 typedef struct nf_task_desc {
     /** Canonical operator name, e.g. "matmul", "conv2d", "softmax". */
@@ -112,7 +113,9 @@ typedef struct nf_task_desc {
     /** Opaque user data pointer — passed through to dispatch. */
     void*           user_data;
 
-    uint32_t        _reserved;
+    /** Push constants — small per-dispatch scalars (seq_len, temperature, etc.) */
+    uint32_t        push_constants_size;
+    uint8_t         push_constants[NF_MAX_PUSH_CONSTANTS];
 } nf_task_desc;
 
 /* ------------------------------------------------------------------ */

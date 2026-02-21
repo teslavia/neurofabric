@@ -82,6 +82,8 @@ if(NF_PLUGIN_NETWORK)
     add_subdirectory(plugins/network)
 endif()
 
+add_subdirectory(core/src/api)
+
 if(NF_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

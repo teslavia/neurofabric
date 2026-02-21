@@ -281,10 +281,54 @@ PRESETS = {
 }
 
 
+# ── GGUF → NFIR conversion ───────────────────────────────────────
+
+# GGUF dtype → NF dtype mapping
+_GGUF_TO_NF_DTYPE = {
+    0: DTYPE_F32,   # GGUF_F32
+    1: DTYPE_F16,   # GGUF_F16
+    2: DTYPE_U8,    # GGUF_Q4_0 (raw quantized bytes)
+    3: DTYPE_U8,    # GGUF_Q4_1
+    6: DTYPE_U8,    # GGUF_Q5_0
+    7: DTYPE_U8,    # GGUF_Q5_1
+    8: DTYPE_U8,    # GGUF_Q8_0
+    9: DTYPE_U8,    # GGUF_Q8_1
+}
+
+
+def _gguf_to_nfir(gguf_path: str, output: str):
+    """Convert GGUF model weights to .nfir format."""
+    from gguf_parser import GGUFParser
+
+    with GGUFParser(gguf_path) as parser:
+        tensors = parser.get_tensors()
+        print(f"[nf_compiler] GGUF: {len(tensors)} tensors from {gguf_path}")
+
+        builder = NfirBuilder()
+        for i, t in enumerate(tensors):
+            nf_dtype = _GGUF_TO_NF_DTYPE.get(t.dtype, DTYPE_U8)
+            raw_data = parser.mm[t.data_offset:t.data_offset + t.data_size]
+            # For quantized types, shape is flattened to byte count
+            if nf_dtype == DTYPE_U8 and t.dtype not in (0, 1):
+                shape = (t.data_size,)
+            else:
+                shape = t.shape
+            builder.add_tensor(i, nf_dtype, shape, USAGE_WEIGHT,
+                               weight_data=np.frombuffer(raw_data, dtype=np.uint8))
+
+        # Default single-node identity graph (weights only, no compute)
+        if tensors:
+            builder.add_node(0, "identity", [0], [0])
+
+        builder.build(output)
+        print(f"[nf_compiler] wrote {output} (gguf, {len(tensors)} weight tensors)")
+
+
 if __name__ == '__main__':
     output = '/tmp/demo_pipeline.nfir'
     remote = None
     preset = 'demo'
+    gguf_path = None
     for arg in sys.argv[1:]:
         if arg.startswith('--output='):
             output = arg.split('=', 1)[1]
@@ -292,8 +336,22 @@ if __name__ == '__main__':
             remote = arg.split('=', 1)[1]
         elif arg.startswith('--preset='):
             preset = arg.split('=', 1)[1]
+        elif arg.startswith('--gguf='):
+            gguf_path = arg.split('=', 1)[1]
+        elif arg == '--gguf':
+            # Next arg is the path (handled below)
+            pass
 
-    if preset not in PRESETS:
-        print(f"Unknown preset '{preset}'. Available: {', '.join(PRESETS)}")
-        sys.exit(1)
-    PRESETS[preset](output, remote)
+    # Handle --gguf <path> (space-separated)
+    if '--gguf' in sys.argv and not gguf_path:
+        idx = sys.argv.index('--gguf')
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith('--'):
+            gguf_path = sys.argv[idx + 1]
+
+    if gguf_path:
+        _gguf_to_nfir(gguf_path, output)
+    else:
+        if preset not in PRESETS:
+            print(f"Unknown preset '{preset}'. Available: {', '.join(PRESETS)}")
+            sys.exit(1)
+        PRESETS[preset](output, remote)

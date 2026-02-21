@@ -21,6 +21,7 @@ cmake-build-*/
 
 # Claude
 .claude/
+CLAUDE.md
 
 MEMORY.md
 tools/nf_compiler/__pycache__/

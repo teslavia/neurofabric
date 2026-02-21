@@ -420,6 +420,189 @@ private:
         });
     }
 
+public:
+    /* -- Session: Pre-compiled Execution Plan ------------------------ */
+
+    class Session {
+    public:
+        Session(PipelineEngine& engine, uint32_t gid)
+            : engine_(engine)
+        {
+            std::lock_guard<std::mutex> lk(engine_.mu_);
+            auto it = engine_.graphs_.find(gid);
+            if (it == engine_.graphs_.end()) return;
+
+            // Take ownership of nodes
+            nodes_ = std::make_shared<std::vector<std::unique_ptr<TaskNode>>>(
+                std::move(it->second.nodes));
+
+            size_t n = nodes_->size();
+            if (n == 0) return;
+
+            // Store initial in-degrees and pre-resolve providers
+            initial_in_degrees_.resize(n);
+            plan_providers_.resize(n, nullptr);
+            for (size_t i = 0; i < n; ++i) {
+                auto& node = (*nodes_)[i];
+                initial_in_degrees_[i] = node->in_degree.load(
+                    std::memory_order_relaxed);
+                plan_providers_[i] = engine_.find_provider(
+                    node->desc.affinity, node->desc.flags);
+                if (initial_in_degrees_[i] == 0) {
+                    roots_.push_back(static_cast<uint32_t>(i));
+                }
+            }
+            valid_ = true;
+
+            // Build name→index map for O(1) push_constants injection
+            for (size_t i = 0; i < n; ++i) {
+                std::string name((*nodes_)[i]->desc.op_name);
+                name_to_index_[name] = static_cast<uint32_t>(i);
+            }
+        }
+
+        bool valid() const { return valid_; }
+        size_t num_nodes() const { return nodes_ ? nodes_->size() : 0; }
+
+        std::future<nf_status> step() {
+            if (!valid_ || !nodes_ || nodes_->empty()) {
+                std::promise<nf_status> p;
+                p.set_value(NF_ERROR_NOT_FOUND);
+                return p.get_future();
+            }
+
+            size_t n = nodes_->size();
+
+            // Reset in-degrees from cached initial values
+            for (size_t i = 0; i < n; ++i) {
+                (*nodes_)[i]->in_degree.store(
+                    initial_in_degrees_[i], std::memory_order_relaxed);
+                (*nodes_)[i]->result.store(NF_OK, std::memory_order_relaxed);
+            }
+
+            // Shared completion state
+            auto remaining = std::make_shared<std::atomic<uint32_t>>(
+                static_cast<uint32_t>(n));
+            auto graph_error =
+                std::make_shared<std::atomic<nf_status>>(NF_OK);
+            auto graph_promise =
+                std::make_shared<std::promise<nf_status>>();
+            auto graph_future = graph_promise->get_future();
+
+            // Profiling
+            auto profile = std::make_shared<GraphProfile>();
+            profile->t_submit = SteadyClock::now();
+            profile->tasks.resize(n);
+            for (size_t i = 0; i < n; ++i)
+                profile->tasks[i].task_id = static_cast<uint32_t>(i);
+
+            last_profile_ = profile;
+
+            // Dispatch pre-computed roots
+            auto now = SteadyClock::now();
+            for (uint32_t tid : roots_) {
+                profile->tasks[tid].t_enqueue = now;
+                dispatch_step(tid, remaining, graph_error,
+                              graph_promise, profile);
+            }
+
+            return graph_future;
+        }
+
+        std::shared_ptr<const GraphProfile> last_profile() const {
+            return last_profile_;
+        }
+
+        /**
+         * Inject push constants into a named node's task descriptor.
+         * Lock-free: caller is sole accessor between step() calls.
+         */
+        nf_status set_push_constants(const char* node_name,
+                                     const void* data, uint32_t size) {
+            if (!data || size > NF_MAX_PUSH_CONSTANTS)
+                return NF_ERROR_INVALID_ARG;
+            auto it = name_to_index_.find(std::string(node_name));
+            if (it == name_to_index_.end()) return NF_ERROR_NOT_FOUND;
+            auto& desc = (*nodes_)[it->second]->desc;
+            std::memcpy(desc.push_constants, data, size);
+            desc.push_constants_size = size;
+            return NF_OK;
+        }
+
+    private:
+        void dispatch_step(
+            uint32_t tid,
+            std::shared_ptr<std::atomic<uint32_t>> remaining,
+            std::shared_ptr<std::atomic<nf_status>> graph_error,
+            std::shared_ptr<std::promise<nf_status>> graph_promise,
+            std::shared_ptr<GraphProfile> profile)
+        {
+            auto nodes = nodes_;
+            auto* prov = plan_providers_[tid];
+
+            engine_.pool_.submit(
+                [this, nodes, tid, remaining, graph_error,
+                 graph_promise, prov, profile]() -> nf_status {
+                auto& node = (*nodes)[tid];
+                nf_status st = NF_OK;
+
+                if (profile) {
+                    auto& tp = profile->tasks[tid];
+                    std::strncpy(tp.op_name, node->desc.op_name, 63);
+                    tp.op_name[63] = '\0';
+                    tp.t_start = SteadyClock::now();
+                }
+
+                if (prov && prov->vtable.dispatch) {
+                    node->desc.user_data = &node->desc;
+                    st = prov->vtable.dispatch(
+                        prov->handle, node->desc.op_name,
+                        node->desc.inputs, node->desc.n_inputs,
+                        node->desc.outputs, node->desc.n_outputs);
+                    node->desc.user_data = nullptr;
+                }
+
+                if (profile)
+                    profile->tasks[tid].t_end = SteadyClock::now();
+
+                node->result.store(st, std::memory_order_release);
+                if (st != NF_OK)
+                    graph_error->store(st, std::memory_order_relaxed);
+
+                for (uint32_t succ_id : node->successors) {
+                    auto& succ = (*nodes)[succ_id];
+                    uint32_t prev = succ->in_degree.fetch_sub(
+                        1, std::memory_order_acq_rel);
+                    if (prev == 1) {
+                        if (profile)
+                            profile->tasks[succ_id].t_enqueue =
+                                SteadyClock::now();
+                        dispatch_step(succ_id, remaining,
+                                      graph_error, graph_promise, profile);
+                    }
+                }
+
+                uint32_t left = remaining->fetch_sub(
+                    1, std::memory_order_acq_rel);
+                if (left == 1)
+                    graph_promise->set_value(
+                        graph_error->load(std::memory_order_acquire));
+
+                return st;
+            });
+        }
+
+        PipelineEngine& engine_;
+        std::shared_ptr<std::vector<std::unique_ptr<TaskNode>>> nodes_;
+        std::vector<uint32_t> initial_in_degrees_;
+        std::vector<ProviderSlot*> plan_providers_;
+        std::vector<uint32_t> roots_;
+        std::shared_ptr<GraphProfile> last_profile_;
+        std::unordered_map<std::string, uint32_t> name_to_index_;
+        bool valid_ = false;
+    };
+
+private:
     /* -- Internal State --------------------------------------------- */
 
     struct GraphState {

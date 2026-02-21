@@ -87,6 +87,30 @@ target_include_directories(nf_profiling_test PRIVATE
 )
 add_test(NAME profiling COMMAND nf_profiling_test)
 
+add_executable(nf_session_test
+    session_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+)
+target_link_libraries(nf_session_test PRIVATE nf_core)
+target_include_directories(nf_session_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/src
+)
+add_test(NAME session COMMAND nf_session_test)
+
+add_executable(nf_push_constants_test
+    push_constants_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+)
+target_link_libraries(nf_push_constants_test PRIVATE nf_core)
+target_include_directories(nf_push_constants_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/src
+)
+add_test(NAME push_constants COMMAND nf_push_constants_test)
+
 if(NF_PLUGIN_METAL)
     add_executable(nf_silicon_test silicon_test.cpp)
     target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)
