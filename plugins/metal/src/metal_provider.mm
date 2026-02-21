@@ -113,6 +113,33 @@ kernel void rope(device const float* in  [[buffer(0)]],
     out[base + pair + half_dim] = x0 * sin_a + x1 * cos_a;
 }
 
+/* ---- Phase 21: Position-aware RoPE for multi-token prefill ---- */
+
+kernel void rope_batch(device const float* in  [[buffer(0)]],
+                       device float* out       [[buffer(1)]],
+                       constant PushConstants& pc [[buffer(15)]],
+                       uint id [[thread_position_in_grid]]) {
+    // Layout: [seq_len, n_heads, head_dim] flattened
+    uint half_dim = pc.head_dim / 2;
+    uint head_size = pc.head_dim;
+    uint elem_in_head = id % head_size;
+    uint pos = (id / (pc.n_heads * head_size)) + pc.step_idx;  // token position
+    uint pair = elem_in_head % half_dim;
+
+    float freq = 1.0f / pow(pc.theta, float(2 * pair) / float(pc.head_dim));
+    float angle = float(pos) * freq;
+    float cos_a = cos(angle);
+    float sin_a = sin(angle);
+
+    uint base = id - elem_in_head;
+    float x0 = in[base + pair];
+    float x1 = in[base + pair + half_dim];
+    if (elem_in_head < half_dim)
+        out[id] = x0 * cos_a - x1 * sin_a;
+    else
+        out[id] = x0 * sin_a + x1 * cos_a;
+}
+
 kernel void linear(device const float* A   [[buffer(0)]],
                    device const float* B   [[buffer(1)]],
                    device float* C         [[buffer(2)]],
@@ -178,6 +205,7 @@ kernel void causal_attention(device const float* Q [[buffer(0)]],
 }
 
 /* ---- Phase 19: KV Cache Attention (dual-mode: prefill + decode) ---- */
+/* GQA support: pc.M carries n_kv_heads. If M==0 or M==n_heads, standard MHA. */
 
 kernel void causal_attention_cached(
         device const float* Q       [[buffer(0)]],
@@ -192,18 +220,22 @@ kernel void causal_attention_cached(
     uint q_pos = id.x;
     uint dim   = pc.head_dim;
     uint step  = pc.step_idx;
+    uint n_kv  = (pc.M > 0 && pc.M < pc.n_heads) ? pc.M : pc.n_heads;
+    uint kv_head = head * n_kv / pc.n_heads;  /* GQA: map Q head → KV head */
 
     if (head >= pc.n_heads) return;
 
     /* ---- Prefill mode (step == 0): full causal attention ---- */
     if (step == 0) {
         if (q_pos >= pc.seq_len) return;
-        /* Copy K_new/V_new into cache */
-        for (uint d = 0; d < dim; ++d) {
-            uint src = head * pc.seq_len * dim + q_pos * dim + d;
-            uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
-            cache_k[dst] = K_new[src];
-            cache_v[dst] = V_new[src];
+        /* Copy K_new/V_new into cache (only KV-head threads write) */
+        if (head < n_kv) {
+            for (uint d = 0; d < dim; ++d) {
+                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
+                cache_k[dst] = K_new[src];
+                cache_v[dst] = V_new[src];
+            }
         }
         /* Full causal attention (same as causal_attention kernel) */
         float scale = rsqrt(float(dim));
@@ -212,7 +244,7 @@ kernel void causal_attention_cached(
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
                 dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
-                     * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+                     * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             dot *= scale;
             if (dot > max_score) max_score = dot;
         }
@@ -221,7 +253,7 @@ kernel void causal_attention_cached(
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
                 dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
-                     * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+                     * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             sum_exp += exp(dot * scale - max_score);
         }
         for (uint d = 0; d < dim; ++d) {
@@ -230,9 +262,9 @@ kernel void causal_attention_cached(
                 float dot2 = 0.0f;
                 for (uint dd = 0; dd < dim; ++dd)
                     dot2 += Q[head * pc.seq_len * dim + q_pos * dim + dd]
-                          * cache_k[head * pc.max_seq_len * dim + k_pos * dim + dd];
+                          * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + dd];
                 float w = exp(dot2 * scale - max_score) / sum_exp;
-                val += w * cache_v[head * pc.max_seq_len * dim + k_pos * dim + d];
+                val += w * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             }
             out[head * pc.seq_len * dim + q_pos * dim + d] = val;
         }
@@ -243,10 +275,12 @@ kernel void causal_attention_cached(
     if (q_pos >= 1) return;  /* only 1 query token in decode */
     if (step >= pc.max_seq_len) return;  /* bounds check */
 
-    /* Append new K/V to cache at position [step] */
-    for (uint d = 0; d < dim; ++d) {
-        cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
-        cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+    /* Append new K/V to cache at position [step] (only KV-head threads write) */
+    if (head < n_kv) {
+        for (uint d = 0; d < dim; ++d) {
+            cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
+            cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+        }
     }
 
     /* Attention: Q (1 token) against cache_k[0..step] */
@@ -256,7 +290,7 @@ kernel void causal_attention_cached(
         float dot = 0.0f;
         for (uint d = 0; d < dim; ++d)
             dot += Q[head * dim + d]
-                 * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+                 * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
         dot *= scale;
         if (dot > max_score) max_score = dot;
     }
@@ -265,7 +299,7 @@ kernel void causal_attention_cached(
         float dot = 0.0f;
         for (uint d = 0; d < dim; ++d)
             dot += Q[head * dim + d]
-                 * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+                 * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
         sum_exp += exp(dot * scale - max_score);
     }
     for (uint d = 0; d < dim; ++d) {
@@ -274,9 +308,9 @@ kernel void causal_attention_cached(
             float dot2 = 0.0f;
             for (uint dd = 0; dd < dim; ++dd)
                 dot2 += Q[head * dim + dd]
-                      * cache_k[head * pc.max_seq_len * dim + k_pos * dim + dd];
+                      * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + dd];
             float w = exp(dot2 * scale - max_score) / sum_exp;
-            val += w * cache_v[head * pc.max_seq_len * dim + k_pos * dim + d];
+            val += w * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
         }
         out[head * dim + d] = val;
     }
@@ -314,6 +348,50 @@ kernel void dequant_q8_0(device const block_q8_0* blocks [[buffer(0)]],
     uint elem_idx  = id % 32;
     float d = float(blocks[block_idx].d);
     out[id] = d * float(blocks[block_idx].qs[elem_idx]);
+}
+
+/* ---- Phase 21: Q6_K Dequantization ---- */
+
+struct block_q6_k {
+    uchar ql[128];     // lower 4 bits of quants
+    uchar qh[64];      // upper 2 bits of quants
+    char  scales[16];  // per-sub-block scales
+    half  d;           // super-block scale
+};
+
+kernel void dequant_q6_k(device const block_q6_k* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 256;
+    uint elem_idx  = id % 256;
+
+    float super_d = float(blocks[block_idx].d);
+
+    // 256 elements split into 16 sub-blocks of 16 elements each
+    uint sub_block = elem_idx / 16;   // 0..15
+    uint sub_elem  = elem_idx % 16;   // 0..15
+
+    // Scale for this sub-block
+    float scale = float(blocks[block_idx].scales[sub_block]) * super_d;
+
+    // Reconstruct 6-bit quant from ql (4 low bits) and qh (2 high bits)
+    // ql: 128 bytes = 256 nibbles (low 4 bits per element)
+    // Each byte of ql holds 2 elements: low nibble = even, high nibble = odd
+    uint ql_byte_idx = elem_idx / 2;
+    uchar ql_byte = blocks[block_idx].ql[ql_byte_idx];
+    int ql_val = (elem_idx & 1) ? (ql_byte >> 4) : (ql_byte & 0xF);
+
+    // qh: 64 bytes = 256 2-bit values
+    // Each byte of qh holds 4 elements (2 bits each)
+    uint qh_byte_idx = elem_idx / 4;
+    uint qh_shift = (elem_idx % 4) * 2;
+    int qh_val = (blocks[block_idx].qh[qh_byte_idx] >> qh_shift) & 0x3;
+
+    // Combine: 6-bit value = (qh << 4) | ql, then subtract 32 for signed
+    int quant = (qh_val << 4) | ql_val;
+    quant -= 32;
+
+    out[id] = scale * float(quant);
 }
 
 /* ---- Phase 17: Tiled MatMul (16x16 threadgroup tiles) ---- */
@@ -551,10 +629,12 @@ struct nf_provider_metal {
     id<MTLComputePipelineState> fn_attn_v     = nil;
     id<MTLComputePipelineState> fn_rms_norm   = nil;
     id<MTLComputePipelineState> fn_rope       = nil;
+    id<MTLComputePipelineState> fn_rope_batch = nil;
     id<MTLComputePipelineState> fn_linear     = nil;
     id<MTLComputePipelineState> fn_causal_attn = nil;
     id<MTLComputePipelineState> fn_dequant_q4_0 = nil;
     id<MTLComputePipelineState> fn_dequant_q8_0 = nil;
+    id<MTLComputePipelineState> fn_dequant_q6_k = nil;
     id<MTLComputePipelineState> fn_linear_tiled = nil;
     id<MTLComputePipelineState> fn_softmax = nil;
     id<MTLComputePipelineState> fn_silu = nil;
@@ -565,6 +645,54 @@ struct nf_provider_metal {
 };
 
 static nf_provider_metal s_instance;
+
+/* ================================================================== */
+/*  Phase 23: Per-Kernel GPU Timestamp Profiling                        */
+/* ================================================================== */
+
+struct MetalDispatchTiming {
+    char     op_name[64];
+    double   gpu_start_s;
+    double   gpu_end_s;
+};
+
+static constexpr uint32_t kMaxTimings = 1024;
+static MetalDispatchTiming s_timings[kMaxTimings];
+static std::atomic<uint32_t> s_timing_head{0};
+static bool s_timing_enabled = false;
+
+static void record_timing(id<MTLCommandBuffer> cb, const char* op) {
+    if (!s_timing_enabled) return;
+    uint32_t idx = s_timing_head.fetch_add(1, std::memory_order_relaxed) % kMaxTimings;
+    s_timings[idx].gpu_start_s = cb.GPUStartTime;
+    s_timings[idx].gpu_end_s   = cb.GPUEndTime;
+    std::strncpy(s_timings[idx].op_name, op, 63);
+    s_timings[idx].op_name[63] = '\0';
+}
+
+extern "C" NF_API void nf_metal_enable_timing(bool enable) {
+    s_timing_enabled = enable;
+    if (enable) s_timing_head.store(0, std::memory_order_relaxed);
+}
+
+extern "C" NF_API uint32_t nf_metal_get_timing_count() {
+    uint32_t head = s_timing_head.load(std::memory_order_relaxed);
+    return (head > kMaxTimings) ? kMaxTimings : head;
+}
+
+extern "C" NF_API void nf_metal_get_timings(
+    char (*op_names)[64], double* gpu_ms, uint32_t max_count)
+{
+    uint32_t head = s_timing_head.load(std::memory_order_relaxed);
+    uint32_t count = (head > kMaxTimings) ? kMaxTimings : head;
+    if (count > max_count) count = max_count;
+    uint32_t start = (head > kMaxTimings) ? (head % kMaxTimings) : 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t idx = (start + i) % kMaxTimings;
+        std::strncpy(op_names[i], s_timings[idx].op_name, 64);
+        gpu_ms[i] = (s_timings[idx].gpu_end_s - s_timings[idx].gpu_start_s) * 1000.0;
+    }
+}
 
 /* ================================================================== */
 /*  Provider VTable                                                    */
@@ -607,10 +735,12 @@ static nf_status metal_init(nf_provider self) {
         p->fn_attn_v     = make_pso(@"attention_prefill_v");
         p->fn_rms_norm   = make_pso(@"rms_norm");
         p->fn_rope       = make_pso(@"rope");
+        p->fn_rope_batch = make_pso(@"rope_batch");
         p->fn_linear     = make_pso(@"linear");
         p->fn_causal_attn = make_pso(@"causal_attention");
         p->fn_dequant_q4_0 = make_pso(@"dequant_q4_0");
         p->fn_dequant_q8_0 = make_pso(@"dequant_q8_0");
+        p->fn_dequant_q6_k = make_pso(@"dequant_q6_k");
         p->fn_linear_tiled = make_pso(@"linear_tiled");
         p->fn_softmax      = make_pso(@"softmax");
         p->fn_silu         = make_pso(@"silu");
@@ -620,8 +750,8 @@ static nf_status metal_init(nf_provider self) {
         p->fn_causal_attn_cached = make_pso(@"causal_attention_cached");
 
         if (!p->fn_vector_add || !p->fn_relu || !p->fn_attn_k || !p->fn_attn_v ||
-            !p->fn_rms_norm || !p->fn_rope || !p->fn_linear || !p->fn_causal_attn ||
-            !p->fn_dequant_q4_0 || !p->fn_dequant_q8_0 || !p->fn_linear_tiled ||
+            !p->fn_rms_norm || !p->fn_rope || !p->fn_rope_batch || !p->fn_linear || !p->fn_causal_attn ||
+            !p->fn_dequant_q4_0 || !p->fn_dequant_q8_0 || !p->fn_dequant_q6_k || !p->fn_linear_tiled ||
             !p->fn_softmax || !p->fn_silu || !p->fn_elem_mul ||
             !p->fn_embed_lookup || !p->fn_argmax || !p->fn_causal_attn_cached) {
             NSLog(@"[NF Metal] Pipeline state creation failed: %@", error);
@@ -642,10 +772,12 @@ static void metal_shutdown(nf_provider self) {
     p->fn_attn_v     = nil;
     p->fn_rms_norm   = nil;
     p->fn_rope       = nil;
+    p->fn_rope_batch = nil;
     p->fn_linear     = nil;
     p->fn_causal_attn = nil;
     p->fn_dequant_q4_0 = nil;
     p->fn_dequant_q8_0 = nil;
+    p->fn_dequant_q6_k = nil;
     p->fn_linear_tiled = nil;
     p->fn_softmax      = nil;
     p->fn_silu         = nil;
@@ -756,7 +888,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
 
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -806,7 +938,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
                 [enc endEncoding];
             }
 
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 k_mb->gpu_done.store(true, std::memory_order_release);
                 k_mb->fence_cv.notify_all();
                 v_mb->gpu_done.store(true, std::memory_order_release);
@@ -866,7 +998,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -895,7 +1027,36 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 21: rope_batch: 1 input → 1 output (position-aware) ---- */
+    if (std::strcmp(op_name, "rope_batch") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_rope_batch];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_rope_batch.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -932,7 +1093,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
                MIN((NSUInteger)N, (NSUInteger)16),
                MIN((NSUInteger)M, (NSUInteger)16), 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -970,7 +1131,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
                MIN((NSUInteger)seq_len, (NSUInteger)16),
                MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -998,7 +1159,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1025,7 +1186,34 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 21: dequant_q6_k: 1 input (quantized) → 1 output (float) ---- */
+    if (std::strcmp(op_name, "dequant_q6_k") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_dequant_q6_k];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_dequant_q6_k.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1061,7 +1249,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1)
            threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1093,7 +1281,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(rows, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1129,7 +1317,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1160,7 +1348,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(count, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1190,7 +1378,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(rows, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];
@@ -1236,7 +1424,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
                MIN((NSUInteger)grid_x, (NSUInteger)16),
                MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
             [enc endEncoding];
-            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
                 out_mb->fence_cv.notify_all();
             }];

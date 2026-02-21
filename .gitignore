@@ -30,3 +30,5 @@ __pycache__/
 *.nfir
 **/docs/**
 build-rel/
+
+**models/**

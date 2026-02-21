@@ -146,6 +146,14 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
     )
     add_test(NAME dag_inference COMMAND nf_dag_inference_test)
+
+    add_executable(nf_real_model_test real_model_test.cpp)
+    target_link_libraries(nf_real_model_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_real_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    add_test(NAME real_model COMMAND nf_real_model_test)
 endif()
 
 if(NF_PLUGIN_RKNN)
