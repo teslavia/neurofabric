@@ -118,6 +118,20 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
     )
     add_test(NAME silicon COMMAND nf_silicon_test)
+
+    add_executable(nf_dequant_test dequant_test.cpp)
+    target_link_libraries(nf_dequant_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_dequant_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME dequant COMMAND nf_dequant_test)
+
+    add_executable(nf_transformer_test transformer_test.cpp)
+    target_link_libraries(nf_transformer_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_transformer_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME transformer COMMAND nf_transformer_test)
 endif()
 
 if(NF_PLUGIN_RKNN)

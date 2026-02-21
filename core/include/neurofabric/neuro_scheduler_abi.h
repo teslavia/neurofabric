@@ -118,6 +118,14 @@ typedef struct nf_task_desc {
     uint8_t         push_constants[NF_MAX_PUSH_CONSTANTS];
 } nf_task_desc;
 
+#ifdef __cplusplus
+static_assert(sizeof(nf_task_desc) == 3056,
+    "nf_task_desc layout changed — offsetof bridge will break");
+#else
+_Static_assert(sizeof(nf_task_desc) == 3056,
+    "nf_task_desc layout changed — offsetof bridge will break");
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  5. Future Status — polled or waited on by the caller               */
 /* ------------------------------------------------------------------ */

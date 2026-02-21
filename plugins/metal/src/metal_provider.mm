@@ -25,6 +25,8 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 /* ================================================================== */
 /*  Embedded MSL Shader Source                                          */
@@ -70,12 +72,13 @@ struct PushConstants {
     uint  N;
     uint  K;
     uint  step_idx;
-    uint  _pad0;
+    uint  max_seq_len;  // KV cache max capacity (was _pad0)
 };
 
-kernel void rms_norm(device const float* in  [[buffer(0)]],
-                     device float* out       [[buffer(1)]],
-                     constant PushConstants& pc [[buffer(15)]],
+kernel void rms_norm(device const float* in       [[buffer(0)]],
+                     device float* out             [[buffer(1)]],
+                     device const float* weights   [[buffer(2)]],
+                     constant PushConstants& pc    [[buffer(15)]],
                      uint id [[thread_position_in_grid]]) {
     uint row = id / pc.head_dim;
     uint col = id % pc.head_dim;
@@ -88,7 +91,7 @@ kernel void rms_norm(device const float* in  [[buffer(0)]],
         sum_sq += v * v;
     }
     float rms = rsqrt(sum_sq / float(dim) + pc.epsilon);
-    out[id] = in[id] * rms;
+    out[id] = in[id] * rms * weights[col];
 }
 
 kernel void rope(device const float* in  [[buffer(0)]],
@@ -172,6 +175,263 @@ kernel void causal_attention(device const float* Q [[buffer(0)]],
         }
         out[head * pc.seq_len * dim + q_pos * dim + d] = val;
     }
+}
+
+/* ---- Phase 19: KV Cache Attention (dual-mode: prefill + decode) ---- */
+
+kernel void causal_attention_cached(
+        device const float* Q       [[buffer(0)]],
+        device const float* K_new   [[buffer(1)]],
+        device const float* V_new   [[buffer(2)]],
+        device float*       cache_k [[buffer(3)]],
+        device float*       cache_v [[buffer(4)]],
+        device float*       out     [[buffer(5)]],
+        constant PushConstants& pc  [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint head  = id.y;
+    uint q_pos = id.x;
+    uint dim   = pc.head_dim;
+    uint step  = pc.step_idx;
+
+    if (head >= pc.n_heads) return;
+
+    /* ---- Prefill mode (step == 0): full causal attention ---- */
+    if (step == 0) {
+        if (q_pos >= pc.seq_len) return;
+        /* Copy K_new/V_new into cache */
+        for (uint d = 0; d < dim; ++d) {
+            uint src = head * pc.seq_len * dim + q_pos * dim + d;
+            uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
+            cache_k[dst] = K_new[src];
+            cache_v[dst] = V_new[src];
+        }
+        /* Full causal attention (same as causal_attention kernel) */
+        float scale = rsqrt(float(dim));
+        float max_score = -1e30f;
+        for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                     * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+            dot *= scale;
+            if (dot > max_score) max_score = dot;
+        }
+        float sum_exp = 0.0f;
+        for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                     * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+            sum_exp += exp(dot * scale - max_score);
+        }
+        for (uint d = 0; d < dim; ++d) {
+            float val = 0.0f;
+            for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
+                float dot2 = 0.0f;
+                for (uint dd = 0; dd < dim; ++dd)
+                    dot2 += Q[head * pc.seq_len * dim + q_pos * dim + dd]
+                          * cache_k[head * pc.max_seq_len * dim + k_pos * dim + dd];
+                float w = exp(dot2 * scale - max_score) / sum_exp;
+                val += w * cache_v[head * pc.max_seq_len * dim + k_pos * dim + d];
+            }
+            out[head * pc.seq_len * dim + q_pos * dim + d] = val;
+        }
+        return;
+    }
+
+    /* ---- Decode mode (step > 0): single-token attention ---- */
+    if (q_pos >= 1) return;  /* only 1 query token in decode */
+    if (step >= pc.max_seq_len) return;  /* bounds check */
+
+    /* Append new K/V to cache at position [step] */
+    for (uint d = 0; d < dim; ++d) {
+        cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
+        cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+    }
+
+    /* Attention: Q (1 token) against cache_k[0..step] */
+    float scale = rsqrt(float(dim));
+    float max_score = -1e30f;
+    for (uint k_pos = 0; k_pos <= step; ++k_pos) {
+        float dot = 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            dot += Q[head * dim + d]
+                 * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+        dot *= scale;
+        if (dot > max_score) max_score = dot;
+    }
+    float sum_exp = 0.0f;
+    for (uint k_pos = 0; k_pos <= step; ++k_pos) {
+        float dot = 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            dot += Q[head * dim + d]
+                 * cache_k[head * pc.max_seq_len * dim + k_pos * dim + d];
+        sum_exp += exp(dot * scale - max_score);
+    }
+    for (uint d = 0; d < dim; ++d) {
+        float val = 0.0f;
+        for (uint k_pos = 0; k_pos <= step; ++k_pos) {
+            float dot2 = 0.0f;
+            for (uint dd = 0; dd < dim; ++dd)
+                dot2 += Q[head * dim + dd]
+                      * cache_k[head * pc.max_seq_len * dim + k_pos * dim + dd];
+            float w = exp(dot2 * scale - max_score) / sum_exp;
+            val += w * cache_v[head * pc.max_seq_len * dim + k_pos * dim + d];
+        }
+        out[head * dim + d] = val;
+    }
+}
+
+/* ---- Phase 17: Dequantization Kernels ---- */
+
+struct block_q4_0 {
+    half  d;           // scale factor
+    uchar qs[16];      // 4-bit quants packed (2 per byte), 32 elements
+};
+
+struct block_q8_0 {
+    half  d;           // scale factor
+    char  qs[32];      // 8-bit quants, 32 elements
+};
+
+kernel void dequant_q4_0(device const block_q4_0* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 32;
+    uint elem_idx  = id % 32;
+    float d = float(blocks[block_idx].d);
+    // ggml Q4_0: low nibble = elements 0..15, high nibble = elements 16..31
+    // byte index = elem_idx % 16, low nibble for elem < 16, high for elem >= 16
+    uchar byte_val = blocks[block_idx].qs[elem_idx % 16];
+    int nibble = (elem_idx < 16) ? (byte_val & 0xF) : (byte_val >> 4);
+    out[id] = d * float(nibble - 8);
+}
+
+kernel void dequant_q8_0(device const block_q8_0* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 32;
+    uint elem_idx  = id % 32;
+    float d = float(blocks[block_idx].d);
+    out[id] = d * float(blocks[block_idx].qs[elem_idx]);
+}
+
+/* ---- Phase 17: Tiled MatMul (16x16 threadgroup tiles) ---- */
+
+constant uint TILE_SIZE = 16;
+
+kernel void linear_tiled(device const float* A   [[buffer(0)]],
+                          device const float* B   [[buffer(1)]],
+                          device float* C         [[buffer(2)]],
+                          constant PushConstants& pc [[buffer(15)]],
+                          uint2 gid [[thread_position_in_grid]],
+                          uint2 lid [[thread_position_in_threadgroup]]) {
+    uint row = gid.y;
+    uint col = gid.x;
+
+    threadgroup float tileA[TILE_SIZE][TILE_SIZE];
+    threadgroup float tileB[TILE_SIZE][TILE_SIZE];
+
+    float acc = 0.0f;
+    uint numTiles = (pc.K + TILE_SIZE - 1) / TILE_SIZE;
+
+    for (uint t = 0; t < numTiles; ++t) {
+        uint aCol = t * TILE_SIZE + lid.x;
+        uint bRow = t * TILE_SIZE + lid.y;
+
+        tileA[lid.y][lid.x] = (row < pc.M && aCol < pc.K)
+            ? A[row * pc.K + aCol] : 0.0f;
+        tileB[lid.y][lid.x] = (bRow < pc.K && col < pc.N)
+            ? B[bRow * pc.N + col] : 0.0f;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint k = 0; k < TILE_SIZE; ++k)
+            acc += tileA[lid.y][k] * tileB[k][lid.x];
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row < pc.M && col < pc.N)
+        C[row * pc.N + col] = acc;
+}
+
+/* ---- Phase 18: Transformer Layer Primitives ---- */
+
+kernel void softmax(device const float* in  [[buffer(0)]],
+                    device float* out       [[buffer(1)]],
+                    constant PushConstants& pc [[buffer(15)]],
+                    uint id [[thread_position_in_grid]]) {
+    /* One thread per row. pc.head_dim = row width, pc.seq_len = num rows */
+    if (id >= pc.seq_len) return;
+    uint dim = pc.head_dim;
+    uint base = id * dim;
+
+    /* Pass 1: find max for numerical stability */
+    float max_val = in[base];
+    for (uint j = 1; j < dim; ++j) {
+        float v = in[base + j];
+        if (v > max_val) max_val = v;
+    }
+
+    /* Pass 2: exp and sum */
+    float sum_exp = 0.0f;
+    for (uint j = 0; j < dim; ++j) {
+        float e = exp(in[base + j] - max_val);
+        out[base + j] = e;
+        sum_exp += e;
+    }
+
+    /* Pass 3: normalize */
+    float inv_sum = 1.0f / sum_exp;
+    for (uint j = 0; j < dim; ++j)
+        out[base + j] *= inv_sum;
+}
+
+kernel void silu(device const float* in  [[buffer(0)]],
+                 device float* out       [[buffer(1)]],
+                 uint id [[thread_position_in_grid]]) {
+    float x = in[id];
+    out[id] = x / (1.0f + exp(-x));
+}
+
+kernel void elementwise_mul(device const float* a [[buffer(0)]],
+                             device const float* b [[buffer(1)]],
+                             device float* out     [[buffer(2)]],
+                             uint id [[thread_position_in_grid]]) {
+    out[id] = a[id] * b[id];
+}
+
+kernel void embedding_lookup(device const float* weights   [[buffer(0)]],
+                              device const int*   token_ids [[buffer(1)]],
+                              device float* out             [[buffer(2)]],
+                              constant PushConstants& pc    [[buffer(15)]],
+                              uint id [[thread_position_in_grid]]) {
+    /* One thread per output element. pc.head_dim = embed dim, pc.seq_len = num tokens */
+    uint tok_idx = id / pc.head_dim;
+    uint dim_idx = id % pc.head_dim;
+    if (tok_idx >= pc.seq_len) return;
+    int token = token_ids[tok_idx];
+    out[id] = weights[token * pc.head_dim + dim_idx];
+}
+
+kernel void argmax_rows(device const float* in  [[buffer(0)]],
+                        device int* out         [[buffer(1)]],
+                        constant PushConstants& pc [[buffer(15)]],
+                        uint id [[thread_position_in_grid]]) {
+    /* One thread per row. pc.N = row width, pc.seq_len = num rows */
+    if (id >= pc.seq_len) return;
+    uint dim = pc.N;
+    uint base = id * dim;
+    float best = in[base];
+    int best_idx = 0;
+    for (uint j = 1; j < dim; ++j) {
+        if (in[base + j] > best) {
+            best = in[base + j];
+            best_idx = int(j);
+        }
+    }
+    out[id] = best_idx;
 }
 )";
 
@@ -293,6 +553,15 @@ struct nf_provider_metal {
     id<MTLComputePipelineState> fn_rope       = nil;
     id<MTLComputePipelineState> fn_linear     = nil;
     id<MTLComputePipelineState> fn_causal_attn = nil;
+    id<MTLComputePipelineState> fn_dequant_q4_0 = nil;
+    id<MTLComputePipelineState> fn_dequant_q8_0 = nil;
+    id<MTLComputePipelineState> fn_linear_tiled = nil;
+    id<MTLComputePipelineState> fn_softmax = nil;
+    id<MTLComputePipelineState> fn_silu = nil;
+    id<MTLComputePipelineState> fn_elem_mul = nil;
+    id<MTLComputePipelineState> fn_embed_lookup = nil;
+    id<MTLComputePipelineState> fn_argmax = nil;
+    id<MTLComputePipelineState> fn_causal_attn_cached = nil;
 };
 
 static nf_provider_metal s_instance;
@@ -340,9 +609,21 @@ static nf_status metal_init(nf_provider self) {
         p->fn_rope       = make_pso(@"rope");
         p->fn_linear     = make_pso(@"linear");
         p->fn_causal_attn = make_pso(@"causal_attention");
+        p->fn_dequant_q4_0 = make_pso(@"dequant_q4_0");
+        p->fn_dequant_q8_0 = make_pso(@"dequant_q8_0");
+        p->fn_linear_tiled = make_pso(@"linear_tiled");
+        p->fn_softmax      = make_pso(@"softmax");
+        p->fn_silu         = make_pso(@"silu");
+        p->fn_elem_mul     = make_pso(@"elementwise_mul");
+        p->fn_embed_lookup = make_pso(@"embedding_lookup");
+        p->fn_argmax       = make_pso(@"argmax_rows");
+        p->fn_causal_attn_cached = make_pso(@"causal_attention_cached");
 
         if (!p->fn_vector_add || !p->fn_relu || !p->fn_attn_k || !p->fn_attn_v ||
-            !p->fn_rms_norm || !p->fn_rope || !p->fn_linear || !p->fn_causal_attn) {
+            !p->fn_rms_norm || !p->fn_rope || !p->fn_linear || !p->fn_causal_attn ||
+            !p->fn_dequant_q4_0 || !p->fn_dequant_q8_0 || !p->fn_linear_tiled ||
+            !p->fn_softmax || !p->fn_silu || !p->fn_elem_mul ||
+            !p->fn_embed_lookup || !p->fn_argmax || !p->fn_causal_attn_cached) {
             NSLog(@"[NF Metal] Pipeline state creation failed: %@", error);
             return NF_ERROR_INTERNAL;
         }
@@ -363,6 +644,15 @@ static void metal_shutdown(nf_provider self) {
     p->fn_rope       = nil;
     p->fn_linear     = nil;
     p->fn_causal_attn = nil;
+    p->fn_dequant_q4_0 = nil;
+    p->fn_dequant_q8_0 = nil;
+    p->fn_linear_tiled = nil;
+    p->fn_softmax      = nil;
+    p->fn_silu         = nil;
+    p->fn_elem_mul     = nil;
+    p->fn_embed_lookup = nil;
+    p->fn_argmax       = nil;
+    p->fn_causal_attn_cached = nil;
     p->library       = nil;
     p->queue         = nil;
     p->device        = nil;
@@ -554,9 +844,10 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
         return td->push_constants;
     };
 
-    /* ---- rms_norm: 1 input → 1 output ---- */
-    if (std::strcmp(op_name, "rms_norm") == 0 && n_in >= 1 && n_out >= 1) {
+    /* ---- rms_norm: 2 inputs (data, weights) → 1 output ---- */
+    if (std::strcmp(op_name, "rms_norm") == 0 && n_in >= 2 && n_out >= 1) {
         auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* wt_mb  = reinterpret_cast<MetalBuffer*>(inputs[1]);
         auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
         const uint8_t* pc = get_push_constants();
 
@@ -567,6 +858,7 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc setComputePipelineState:prov->fn_rms_norm];
             [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
             [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            [enc setBuffer:wt_mb->mtl_buffer  offset:0 atIndex:2];
             if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
             NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
             NSUInteger tpg = prov->fn_rms_norm.maxTotalThreadsPerThreadgroup;
@@ -676,6 +968,272 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
             [enc dispatchThreads:MTLSizeMake(seq_len, n_heads, 1)
            threadsPerThreadgroup:MTLSizeMake(
                MIN((NSUInteger)seq_len, (NSUInteger)16),
+               MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 17: dequant_q4_0: 1 input (quantized) → 1 output (float) ---- */
+    if (std::strcmp(op_name, "dequant_q4_0") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_dequant_q4_0];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            /* n_elements = output size / sizeof(float) */
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_dequant_q4_0.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- dequant_q8_0: 1 input (quantized) → 1 output (float) ---- */
+    if (std::strcmp(op_name, "dequant_q8_0") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_dequant_q8_0];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_dequant_q8_0.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- linear_tiled: 2 inputs → 1 output (16x16 tiled matmul) ---- */
+    if (std::strcmp(op_name, "linear_tiled") == 0 && n_in >= 2 && n_out >= 1) {
+        auto* a_mb   = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* b_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_linear_tiled];
+            [enc setBuffer:a_mb->mtl_buffer   offset:0 atIndex:0];
+            [enc setBuffer:b_mb->mtl_buffer   offset:0 atIndex:1];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:2];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+            uint32_t M = 1, N = 1;
+            if (pc) {
+                std::memcpy(&M, pc + 20, sizeof(uint32_t));
+                std::memcpy(&N, pc + 24, sizeof(uint32_t));
+            }
+            /* Round up grid to tile boundaries */
+            NSUInteger gridW = ((N + 15) / 16) * 16;
+            NSUInteger gridH = ((M + 15) / 16) * 16;
+            [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1)
+           threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 18: Transformer layer primitives ---- */
+
+    /* ---- softmax: 1 input → 1 output (1 thread per row) ---- */
+    if (std::strcmp(op_name, "softmax") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_softmax];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+            uint32_t rows = 1;
+            if (pc) std::memcpy(&rows, pc, sizeof(uint32_t)); /* seq_len */
+            NSUInteger tpg = prov->fn_softmax.maxTotalThreadsPerThreadgroup;
+            if (tpg > rows) tpg = rows;
+            [enc dispatchThreads:MTLSizeMake(rows, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- silu: 1 input → 1 output ---- */
+    if (std::strcmp(op_name, "silu") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        return dispatch_unary(prov, prov->fn_silu, in_mb, out_mb);
+    }
+
+    /* ---- elementwise_mul: 2 inputs → 1 output ---- */
+    if (std::strcmp(op_name, "elementwise_mul") == 0 && n_in >= 2 && n_out >= 1) {
+        auto* a_mb   = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* b_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_elem_mul];
+            [enc setBuffer:a_mb->mtl_buffer   offset:0 atIndex:0];
+            [enc setBuffer:b_mb->mtl_buffer   offset:0 atIndex:1];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:2];
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_elem_mul.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- embedding_lookup: 2 inputs (weights, token_ids) → 1 output ---- */
+    if (std::strcmp(op_name, "embedding_lookup") == 0 && n_in >= 2 && n_out >= 1) {
+        auto* w_mb   = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* t_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_embed_lookup];
+            [enc setBuffer:w_mb->mtl_buffer   offset:0 atIndex:0];
+            [enc setBuffer:t_mb->mtl_buffer   offset:0 atIndex:1];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:2];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float);
+            NSUInteger tpg = prov->fn_embed_lookup.maxTotalThreadsPerThreadgroup;
+            if (tpg > count) tpg = count;
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- argmax: 1 input → 1 output (int32, 1 thread per row) ---- */
+    if (std::strcmp(op_name, "argmax") == 0 && n_in >= 1 && n_out >= 1) {
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_argmax];
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0];
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+            uint32_t rows = 1;
+            if (pc) std::memcpy(&rows, pc, sizeof(uint32_t));
+            NSUInteger tpg = prov->fn_argmax.maxTotalThreadsPerThreadgroup;
+            if (tpg > rows) tpg = rows;
+            [enc dispatchThreads:MTLSizeMake(rows, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 19: causal_attention_cached: 3 in (Q,K,V) + 2 in/out (cache_k,cache_v) → 1 out ---- */
+    if (std::strcmp(op_name, "causal_attention_cached") == 0 && n_in >= 5 && n_out >= 1) {
+        auto* q_mb       = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* k_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+        auto* v_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[2]);
+        auto* cache_k_mb = reinterpret_cast<MetalBuffer*>(inputs[3]);
+        auto* cache_v_mb = reinterpret_cast<MetalBuffer*>(inputs[4]);
+        auto* out_mb     = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_causal_attn_cached];
+            [enc setBuffer:q_mb->mtl_buffer       offset:0 atIndex:0];
+            [enc setBuffer:k_new_mb->mtl_buffer   offset:0 atIndex:1];
+            [enc setBuffer:v_new_mb->mtl_buffer   offset:0 atIndex:2];
+            [enc setBuffer:cache_k_mb->mtl_buffer offset:0 atIndex:3];
+            [enc setBuffer:cache_v_mb->mtl_buffer offset:0 atIndex:4];
+            [enc setBuffer:out_mb->mtl_buffer     offset:0 atIndex:5];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+
+            /* PushConstants layout (40B): seq_len(0) n_heads(4) head_dim(8)
+               epsilon(12) theta(16) M(20) N(24) K(28) step_idx(32) max_seq_len(36) */
+            uint32_t seq_len = 1, n_heads = 1, step_idx = 0;
+            if (pc) {
+                std::memcpy(&seq_len,  pc,      sizeof(uint32_t));
+                std::memcpy(&n_heads,  pc + 4,  sizeof(uint32_t));
+                std::memcpy(&step_idx, pc + 32, sizeof(uint32_t));
+            }
+            uint32_t grid_x = (step_idx == 0) ? seq_len : 1;
+            [enc dispatchThreads:MTLSizeMake(grid_x, n_heads, 1)
+           threadsPerThreadgroup:MTLSizeMake(
+               MIN((NSUInteger)grid_x, (NSUInteger)16),
                MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
             [enc endEncoding];
             [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer>) {

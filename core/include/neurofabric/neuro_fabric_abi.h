@@ -98,7 +98,9 @@ typedef enum nf_dtype {
     NF_DTYPE_BF16  = 2,
     NF_DTYPE_I8    = 3,
     NF_DTYPE_I32   = 4,
-    NF_DTYPE_U8    = 5
+    NF_DTYPE_U8    = 5,
+    NF_DTYPE_Q4_0  = 6,   /**< ggml Q4_0: 18 bytes/block, 32 elements/block */
+    NF_DTYPE_Q8_0  = 7    /**< ggml Q8_0: 34 bytes/block, 32 elements/block */
 } nf_dtype;
 
 #define NF_MAX_DIMS 8

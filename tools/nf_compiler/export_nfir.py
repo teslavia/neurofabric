@@ -43,9 +43,12 @@ DTYPE_BF16 = 2
 DTYPE_I8   = 3
 DTYPE_I32  = 4
 DTYPE_U8   = 5
+DTYPE_Q4_0 = 6
+DTYPE_Q8_0 = 7
 
 _DTYPE_BYTES = {DTYPE_F32: 4, DTYPE_F16: 2, DTYPE_BF16: 2,
-                DTYPE_I8: 1, DTYPE_I32: 4, DTYPE_U8: 1}
+                DTYPE_I8: 1, DTYPE_I32: 4, DTYPE_U8: 1,
+                DTYPE_Q4_0: 1, DTYPE_Q8_0: 1}  # byte-level for quantized
 
 # nf_task_flags
 TASK_NONE   = 0
@@ -287,17 +290,23 @@ PRESETS = {
 _GGUF_TO_NF_DTYPE = {
     0: DTYPE_F32,   # GGUF_F32
     1: DTYPE_F16,   # GGUF_F16
-    2: DTYPE_U8,    # GGUF_Q4_0 (raw quantized bytes)
-    3: DTYPE_U8,    # GGUF_Q4_1
+    2: DTYPE_Q4_0,  # GGUF_Q4_0 (native quantized)
+    3: DTYPE_U8,    # GGUF_Q4_1 (raw bytes, no native kernel yet)
     6: DTYPE_U8,    # GGUF_Q5_0
     7: DTYPE_U8,    # GGUF_Q5_1
-    8: DTYPE_U8,    # GGUF_Q8_0
+    8: DTYPE_Q8_0,  # GGUF_Q8_0 (native quantized)
     9: DTYPE_U8,    # GGUF_Q8_1
+}
+
+# GGUF dtype → dequant op name (only for types with GPU kernels)
+_GGUF_DEQUANT_OP = {
+    2: "dequant_q4_0",
+    8: "dequant_q8_0",
 }
 
 
 def _gguf_to_nfir(gguf_path: str, output: str):
-    """Convert GGUF model weights to .nfir format."""
+    """Convert GGUF model weights to .nfir format with dequant DAG."""
     from gguf_parser import GGUFParser
 
     with GGUFParser(gguf_path) as parser:
@@ -305,23 +314,49 @@ def _gguf_to_nfir(gguf_path: str, output: str):
         print(f"[nf_compiler] GGUF: {len(tensors)} tensors from {gguf_path}")
 
         builder = NfirBuilder()
+        next_tensor_id = 0
+        next_node_id = 0
+
         for i, t in enumerate(tensors):
             nf_dtype = _GGUF_TO_NF_DTYPE.get(t.dtype, DTYPE_U8)
             raw_data = parser.mm[t.data_offset:t.data_offset + t.data_size]
-            # For quantized types, shape is flattened to byte count
-            if nf_dtype == DTYPE_U8 and t.dtype not in (0, 1):
-                shape = (t.data_size,)
-            else:
-                shape = t.shape
-            builder.add_tensor(i, nf_dtype, shape, USAGE_WEIGHT,
-                               weight_data=np.frombuffer(raw_data, dtype=np.uint8))
 
-        # Default single-node identity graph (weights only, no compute)
-        if tensors:
+            # Weight tensor (quantized block data as raw bytes)
+            weight_shape = (t.data_size,)
+            builder.add_tensor(next_tensor_id, nf_dtype, weight_shape,
+                               USAGE_WEIGHT,
+                               weight_data=np.frombuffer(raw_data, dtype=np.uint8))
+            weight_tid = next_tensor_id
+            next_tensor_id += 1
+
+            # If this dtype has a dequant kernel, emit dequant node + output tensor
+            dequant_op = _GGUF_DEQUANT_OP.get(t.dtype)
+            if dequant_op:
+                # Compute number of float elements from block structure
+                from gguf_parser import _DTYPE_BLOCK_SIZE
+                block_bytes, block_elems = _DTYPE_BLOCK_SIZE.get(t.dtype, (1, 1))
+                n_elements = 1
+                for d in t.shape:
+                    n_elements *= d
+                out_shape = t.shape  # original tensor shape
+                out_bytes = n_elements * 4  # float32 output
+
+                builder.add_tensor(next_tensor_id, DTYPE_F32, out_shape,
+                                   USAGE_ACTIVATION)
+                out_tid = next_tensor_id
+                next_tensor_id += 1
+
+                builder.add_node(next_node_id, dequant_op,
+                                 [weight_tid], [out_tid])
+                next_node_id += 1
+
+        # Fallback: if no dequant nodes were generated, add identity
+        if next_node_id == 0 and next_tensor_id > 0:
             builder.add_node(0, "identity", [0], [0])
 
         builder.build(output)
-        print(f"[nf_compiler] wrote {output} (gguf, {len(tensors)} weight tensors)")
+        print(f"[nf_compiler] wrote {output} (gguf, {len(tensors)} weights, "
+              f"{next_node_id} dequant nodes)")
 
 
 if __name__ == '__main__':
