@@ -63,6 +63,30 @@ inline const char* nf_dequant_op_name(uint32_t gguf_dtype) {
     }
 }
 
+/* Phase 27: FP16 dequant op name overload */
+inline const char* nf_dequant_op_name_f16(uint32_t gguf_dtype) {
+    switch (gguf_dtype) {
+        case GGUF_DTYPE_Q4_0: return "dequant_q4_0_f16";
+        case GGUF_DTYPE_Q4_1: return "dequant_q4_1_f16";
+        case GGUF_DTYPE_Q5_0: return "dequant_q5_0_f16";
+        case GGUF_DTYPE_Q5_1: return "dequant_q5_1_f16";
+        case GGUF_DTYPE_Q8_0: return "dequant_q8_0_f16";
+        case GGUF_DTYPE_Q2_K: return "dequant_q2_k_f16";
+        case GGUF_DTYPE_Q3_K: return "dequant_q3_k_f16";
+        case GGUF_DTYPE_Q4_K: return "dequant_q4_k_f16";
+        case GGUF_DTYPE_Q5_K: return "dequant_q5_k_f16";
+        case GGUF_DTYPE_Q6_K: return "dequant_q6_k_f16";
+        default:              return nullptr;
+    }
+}
+
+/* Phase 29: Fused dequant+linear op name */
+inline const char* nf_fused_linear_op_name(nf_dtype qtype, bool fp16 = false) {
+    if (qtype == NF_DTYPE_Q4_0)
+        return fp16 ? "dequant_q4_0_linear_f16" : "dequant_q4_0_linear";
+    return nullptr;
+}
+
 } /* namespace nf */
 
 #endif /* NF_QUANT_REGISTRY_HPP */

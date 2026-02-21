@@ -26,6 +26,7 @@ static void test_register_and_find() {
     auto* strat = nf::nf_find_arch("llama");
     CHECK(strat != nullptr);
     CHECK(strat->weight_name != nullptr);
+    CHECK(strat->attn_op_name != nullptr);
 
     /* Verify weight naming */
     char buf[128];
@@ -40,6 +41,9 @@ static void test_register_and_find() {
 
     strat->weight_name(0, "output", buf, sizeof(buf));
     CHECK(std::strcmp(buf, "output.weight") == 0);
+
+    /* Verify attn_op_name (Phase 30) */
+    CHECK(std::strcmp(strat->attn_op_name(), "flash_attention_cached") == 0);
 
     std::printf("    register_and_find verified ✓\n");
 }
@@ -61,6 +65,20 @@ static void test_lookup_missing() {
     CHECK(strat != nullptr);
 
     std::printf("    lookup_missing verified ✓\n");
+}
+
+/* Phase 30: Verify Mistral attn_op_name */
+static void test_mistral_attn_op() {
+    std::printf("  test_mistral_attn_op...\n");
+    nf::nf_clear_arch_registry();
+
+    nf::nf_register_mistral();
+    auto* strat = nf::nf_find_arch("mistral");
+    CHECK(strat != nullptr);
+    CHECK(strat->attn_op_name != nullptr);
+    CHECK(std::strcmp(strat->attn_op_name(), "flash_attention_cached") == 0);
+
+    std::printf("    mistral_attn_op verified ✓\n");
 }
 
 static void test_multiple_archs() {
@@ -114,13 +132,14 @@ static void test_max_capacity() {
 }
 
 int main() {
-    std::printf("arch_registry_test: Phase 25 — Architecture Registry\n");
+    std::printf("arch_registry_test: Phase 25+30 — Architecture Registry\n");
 
     test_register_and_find();
     test_lookup_missing();
+    test_mistral_attn_op();
     test_multiple_archs();
     test_max_capacity();
 
-    std::printf("OK: all Phase 25 arch registry tests passed\n");
+    std::printf("OK: all arch registry tests passed\n");
     return 0;
 }

@@ -35,7 +35,8 @@ static void usage(const char* prog) {
         "  --temperature T  (default: 0.8)\n"
         "  --top-k K        (default: 40)\n"
         "  --top-p P        (default: 0.95)\n"
-        "  --seed S         (default: random)\n",
+        "  --seed S         (default: random)\n"
+        "  --fp16           use FP16 inference\n",
         prog);
 }
 
@@ -55,6 +56,11 @@ int main(int argc, char** argv) {
     sp.repeat_penalty = 1.1f;
     sp.seed = 0;
     bool has_seed = false;
+    bool use_fp16 = false;
+
+    /* Check NF_FP16 env var */
+    const char* fp16_env = std::getenv("NF_FP16");
+    if (fp16_env && std::strcmp(fp16_env, "1") == 0) use_fp16 = true;
 
     for (int i = 3; i < argc; ++i) {
         if (std::strcmp(argv[i], "--max-tokens") == 0 && i + 1 < argc)
@@ -69,6 +75,8 @@ int main(int argc, char** argv) {
             sp.seed = std::atoi(argv[++i]);
             has_seed = true;
         }
+        else if (std::strcmp(argv[i], "--fp16") == 0)
+            use_fp16 = true;
     }
     if (!has_seed) sp.seed = static_cast<uint32_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
@@ -108,7 +116,7 @@ int main(int argc, char** argv) {
 
     /* Create context */
     auto t0 = std::chrono::steady_clock::now();
-    auto ctx = nf::create_llama_context(engine, *model, prov, vt, mem_vt, max_seq, prefill_seq);
+    auto ctx = nf::create_llama_context(engine, *model, prov, vt, mem_vt, max_seq, prefill_seq, use_fp16);
     if (!ctx) { std::fprintf(stderr, "Context creation failed\n"); return 1; }
     auto t_ctx = std::chrono::steady_clock::now();
 

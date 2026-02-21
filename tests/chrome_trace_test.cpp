@@ -30,6 +30,16 @@ extern "C" void nf_metal_get_timings(char (*op_names)[64], double* gpu_ms,
         gpu_ms[i] = kMockMs[i];
     }
 }
+extern "C" void nf_metal_get_timings_ext(char (*op_names)[64], double* gpu_ms,
+                                          uint8_t* dtypes, uint32_t* elem_counts,
+                                          uint32_t max_count) {
+    nf_metal_get_timings(op_names, gpu_ms, max_count);
+    uint32_t n = (kMockCount < max_count) ? kMockCount : max_count;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (dtypes)      dtypes[i]      = 0;  /* F32 */
+        if (elem_counts) elem_counts[i] = 1024;
+    }
+}
 
 #include "trace_export.hpp"
 
@@ -64,6 +74,8 @@ static void test_export_creates_file() {
     CHECK(std::strstr(buf, "\"rms_norm\"") != nullptr);
     CHECK(std::strstr(buf, "\"ph\":\"X\"") != nullptr);
     CHECK(std::strstr(buf, "\"cat\":\"gpu\"") != nullptr);
+    CHECK(std::strstr(buf, "\"dtype\":\"F32\"") != nullptr);
+    CHECK(std::strstr(buf, "\"elements\":1024") != nullptr);
 
     /* Verify timestamps are monotonically increasing */
     /* matmul_q4 starts at 0, rope at 1500µs, flash at 1800µs, rms at 3900µs */

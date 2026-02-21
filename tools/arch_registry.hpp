@@ -40,11 +40,16 @@ typedef const char* (*nf_weight_name_fn)(uint32_t layer, const char* component,
                                           char* buf, size_t buf_len);
 
 /**
+ * Returns the attention op name for this architecture.
+ */
+typedef const char* (*nf_attn_op_name_fn)();
+
+/**
  * Architecture strategy — bundles weight naming with optional metadata.
- * Attention and FFN build functions are Phase 26 scope (Mistral/Phi).
  */
 struct nf_arch_strategy {
-    nf_weight_name_fn weight_name;
+    nf_weight_name_fn  weight_name;
+    nf_attn_op_name_fn attn_op_name;  /* Phase 30: attention kernel selection */
 };
 
 /* ---- Global registry (fixed-size, no heap) ---- */
@@ -89,6 +94,9 @@ inline void nf_clear_arch_registry() {
 
 /* ---- Default LLaMA weight naming strategy ---- */
 
+inline const char* llama_attn_op_name() { return "flash_attention_cached"; }
+inline const char* mistral_attn_op_name() { return "flash_attention_cached"; }
+
 inline const char* llama_weight_name(uint32_t layer, const char* component,
                                       char* buf, size_t buf_len) {
     if (std::strcmp(component, "token_embd") == 0) {
@@ -106,6 +114,7 @@ inline const char* llama_weight_name(uint32_t layer, const char* component,
 inline void nf_register_llama() {
     nf_arch_strategy strat{};
     strat.weight_name = llama_weight_name;
+    strat.attn_op_name = llama_attn_op_name;
     nf_register_arch("llama", strat);
 }
 
@@ -113,6 +122,7 @@ inline void nf_register_llama() {
 inline void nf_register_mistral() {
     nf_arch_strategy strat{};
     strat.weight_name = llama_weight_name;
+    strat.attn_op_name = mistral_attn_op_name;
     nf_register_arch("mistral", strat);
 }
 

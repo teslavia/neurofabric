@@ -708,6 +708,7 @@ struct LlamaContext {
     uint32_t ff_dim, vocab_size, max_seq;
     float rope_theta, rms_norm_eps;
     uint32_t sliding_window = 0;  /* 0 = full causal, >0 = sliding (Mistral) */
+    bool use_fp16 = false;  /* Phase 27: F16 activations + weights */
 
     /* Pre-dequantized F32 weight buffers (computed once via warmup DAG) */
     struct LayerF32Weights {
@@ -717,6 +718,17 @@ struct LlamaContext {
     BufPair embed_f32;
     std::vector<LayerF32Weights> layer_f32;
     BufPair lm_head_f32;
+
+    /* Raw quantized weights kept for fused ops (Phase 30) */
+    struct LayerQuantWeights {
+        BufPair q, k, v, o;
+        BufPair gate, up, down;
+        nf_dtype q_dt{}, k_dt{}, v_dt{}, o_dt{};
+        nf_dtype gate_dt{}, up_dt{}, down_dt{};
+    };
+    std::vector<LayerQuantWeights> layer_quant;
+    BufPair lm_head_quant{};
+    nf_dtype lm_head_quant_dt{};
 
     /* RMS norm weights (always F32, no dequant needed) */
     struct LayerNormWeights {
@@ -759,7 +771,8 @@ inline LlamaContextPtr create_llama_context(
     nf_provider_vtable& vt,
     nf_provider_mem_vtable& mem_vt,
     uint32_t max_seq,
-    uint32_t max_prefill_seq)
+    uint32_t max_prefill_seq,
+    bool use_fp16 = false)
 {
     auto fail = [](){ return LlamaContextPtr(nullptr, release_llama_context); };
     LlamaContextPtr ctx(new LlamaContext, release_llama_context);
@@ -779,6 +792,7 @@ inline LlamaContextPtr create_llama_context(
     ctx->rope_theta = model.rope_theta;
     ctx->rms_norm_eps = model.rms_norm_eps;
     ctx->sliding_window = model.sliding_window;
+    ctx->use_fp16 = use_fp16;
 
     const uint32_t D = ctx->dim;
     const uint32_t HD = ctx->head_dim;
@@ -811,8 +825,12 @@ inline LlamaContextPtr create_llama_context(
     if (!emb_ti) { return fail(); }
     BufPair w_embed_raw = load_weight(prov, mem_vt, *emb_ti, nf_dtype_for(emb_ti->gguf_dtype));
     raw_weight_bufs.push_back(w_embed_raw);
-    ctx->embed_f32 = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32,
-                                      (size_t)V * D * sizeof(float));
+    {
+        nf_dtype emb_out_dt = use_fp16 ? NF_DTYPE_F16 : NF_DTYPE_F32;
+        size_t emb_elem = use_fp16 ? sizeof(uint16_t) : sizeof(float);
+        ctx->embed_f32 = llama_alloc_buf(prov, mem_vt, emb_out_dt,
+                                          (size_t)V * D * emb_elem);
+    }
     uint32_t emb_gguf_dtype = emb_ti->gguf_dtype;
 
     /* Per-layer weights */
@@ -862,17 +880,20 @@ inline LlamaContextPtr create_llama_context(
         if (!load_raw("ffn_up",      rl.w_up,   rl.up_dtype))   { return fail(); }
         if (!load_raw("ffn_down",    rl.w_down, rl.down_dtype)) { return fail(); }
 
-        /* Allocate F32 output buffers for dequant */
-        size_t dq_dim2 = (size_t)D * D * sizeof(float);
-        size_t dq_kv   = (size_t)D * KV_DIM * sizeof(float);
-        size_t dq_ff_sz = (size_t)D * FF * sizeof(float);
+        /* Allocate dequant output buffers (F32 or F16 depending on use_fp16) */
+        size_t elem_sz = use_fp16 ? sizeof(uint16_t) : sizeof(float);
+        nf_dtype out_dtype = use_fp16 ? NF_DTYPE_F16 : NF_DTYPE_F32;
+        size_t dq_dim2 = (size_t)D * D * elem_sz;
+        size_t dq_kv   = (size_t)D * KV_DIM * elem_sz;
+        size_t dq_ff_sz = (size_t)D * FF * elem_sz;
 
         auto alloc_f32_or_copy = [&](BufPair& raw, uint32_t dtype,
-                                      BufPair& f32_out, size_t f32_size) {
-            if (is_quantized(dtype)) {
-                f32_out = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, f32_size);
+                                      BufPair& f32_out, size_t out_size) {
+            if (is_quantized(dtype) || use_fp16) {
+                /* Quantized → dequant needed; or F16 mode → need new buffer even for F32 weights */
+                f32_out = llama_alloc_buf(prov, mem_vt, out_dtype, out_size);
             } else {
-                /* Already F32 — just alias the raw buffer (won't be released) */
+                /* Already F32 and not F16 mode — just alias the raw buffer */
                 f32_out = raw;
             }
         };
@@ -896,9 +917,11 @@ inline LlamaContextPtr create_llama_context(
     BufPair w_lm_raw = load_weight(prov, mem_vt, *lm_ti, nf_dtype_for(lm_ti->gguf_dtype));
     raw_weight_bufs.push_back(w_lm_raw);
     uint32_t lm_gguf_dtype = lm_ti->gguf_dtype;
-    if (is_quantized(lm_gguf_dtype)) {
-        ctx->lm_head_f32 = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32,
-                                             (size_t)V * D * sizeof(float));
+    if (is_quantized(lm_gguf_dtype) || use_fp16) {
+        nf_dtype lm_out_dt = use_fp16 ? NF_DTYPE_F16 : NF_DTYPE_F32;
+        size_t lm_elem = use_fp16 ? sizeof(uint16_t) : sizeof(float);
+        ctx->lm_head_f32 = llama_alloc_buf(prov, mem_vt, lm_out_dt,
+                                             (size_t)V * D * lm_elem);
     } else {
         ctx->lm_head_f32 = w_lm_raw;
     }
@@ -910,12 +933,36 @@ inline LlamaContextPtr create_llama_context(
         uint32_t wgid = engine.create_graph();
         bool has_dequant = false;
 
+        auto dq_op = [&](uint32_t dtype) -> const char* {
+            return use_fp16 ? nf_dequant_op_name_f16(dtype) : dequant_op_name(dtype);
+        };
+
         /* Embed dequant */
         if (is_quantized(emb_gguf_dtype)) {
             BufPair ins[] = {w_embed_raw};
-            add_node(engine, wgid, dequant_op_name(emb_gguf_dtype),
+            add_node(engine, wgid, dq_op(emb_gguf_dtype),
                      ins, 1, &ctx->embed_f32, 1);
             has_dequant = true;
+        } else if (use_fp16) {
+            /* F32 embed in FP16 mode — need GPU dequant_q4_0_f16 won't work, just memcpy + convert on CPU */
+            void *src, *dst;
+            w_embed_raw.ops.map(w_embed_raw.buf, &src);
+            ctx->embed_f32.ops.map(ctx->embed_f32.buf, &dst);
+            const float* sf = (const float*)src;
+            uint16_t* dh = (uint16_t*)dst;
+            size_t n = (size_t)V * D;
+            for (size_t i = 0; i < n; ++i) {
+                /* F32 → F16 via bit manipulation */
+                uint32_t fb; std::memcpy(&fb, &sf[i], 4);
+                uint32_t sign = (fb >> 16) & 0x8000;
+                int32_t exp = ((fb >> 23) & 0xFF) - 127 + 15;
+                uint32_t mant = (fb >> 13) & 0x3FF;
+                if (exp <= 0) dh[i] = (uint16_t)sign;
+                else if (exp >= 31) dh[i] = (uint16_t)(sign | 0x7C00);
+                else dh[i] = (uint16_t)(sign | (exp << 10) | mant);
+            }
+            ctx->embed_f32.ops.unmap(ctx->embed_f32.buf);
+            w_embed_raw.ops.unmap(w_embed_raw.buf);
         } else {
             /* F32 embed — copy raw into embed_f32 */
             void *src, *dst;
@@ -926,31 +973,42 @@ inline LlamaContextPtr create_llama_context(
             w_embed_raw.ops.unmap(w_embed_raw.buf);
         }
 
-        /* Per-layer weight dequant */
+        /* Per-layer weight dequant (Phase 30: skip fused-eligible weights) */
+        ctx->layer_quant.resize(NL);
         for (uint32_t l = 0; l < NL; ++l) {
             auto& rl = raw_layers[l];
             auto& lf = ctx->layer_f32[l];
+            auto& lq = ctx->layer_quant[l];
 
-            auto maybe_dq = [&](BufPair& raw, uint32_t dtype, BufPair& f32_out) {
+            auto maybe_dq = [&](BufPair& raw, uint32_t dtype,
+                                BufPair& f32_out, BufPair& quant_out, nf_dtype& quant_dt) {
                 if (!is_quantized(dtype)) return;
-                BufPair ins[] = {raw};
-                add_node(engine, wgid, dequant_op_name(dtype), ins, 1, &f32_out, 1);
-                has_dequant = true;
+                nf_dtype nf_dt = nf_dtype_for_gguf(dtype);
+                if (nf_fused_linear_op_name(nf_dt, use_fp16) != nullptr) {
+                    /* Fused path: keep raw quantized weight, skip dequant */
+                    quant_out = raw;
+                    quant_dt = nf_dt;
+                } else {
+                    /* Separate path: dequant in warmup */
+                    BufPair ins[] = {raw};
+                    add_node(engine, wgid, dq_op(dtype), ins, 1, &f32_out, 1);
+                    has_dequant = true;
+                }
             };
 
-            maybe_dq(rl.w_q,    rl.q_dtype,    lf.q);
-            maybe_dq(rl.w_k,    rl.k_dtype,    lf.k);
-            maybe_dq(rl.w_v,    rl.v_dtype,    lf.v);
-            maybe_dq(rl.w_o,    rl.o_dtype,    lf.o);
-            maybe_dq(rl.w_gate, rl.gate_dtype, lf.gate);
-            maybe_dq(rl.w_up,   rl.up_dtype,   lf.up);
-            maybe_dq(rl.w_down, rl.down_dtype, lf.down);
+            maybe_dq(rl.w_q,    rl.q_dtype,    lf.q,    lq.q,    lq.q_dt);
+            maybe_dq(rl.w_k,    rl.k_dtype,    lf.k,    lq.k,    lq.k_dt);
+            maybe_dq(rl.w_v,    rl.v_dtype,    lf.v,    lq.v,    lq.v_dt);
+            maybe_dq(rl.w_o,    rl.o_dtype,    lf.o,    lq.o,    lq.o_dt);
+            maybe_dq(rl.w_gate, rl.gate_dtype, lf.gate, lq.gate, lq.gate_dt);
+            maybe_dq(rl.w_up,   rl.up_dtype,   lf.up,   lq.up,   lq.up_dt);
+            maybe_dq(rl.w_down, rl.down_dtype, lf.down, lq.down, lq.down_dt);
         }
 
         /* LM head dequant */
         if (is_quantized(lm_gguf_dtype)) {
             BufPair ins[] = {w_lm_raw};
-            add_node(engine, wgid, dequant_op_name(lm_gguf_dtype),
+            add_node(engine, wgid, dq_op(lm_gguf_dtype),
                      ins, 1, &ctx->lm_head_f32, 1);
             has_dequant = true;
         }
@@ -967,11 +1025,13 @@ inline LlamaContextPtr create_llama_context(
         engine.destroy_graph(wgid);
     }
 
-    /* Release raw quantized weight buffers — F32 copies are permanent */
+    /* Release raw quantized weight buffers — F32 copies are permanent,
+       fused-aliased buffers must be kept (Phase 30) */
     for (auto& bp : raw_weight_bufs) {
         /* Don't release if it was aliased into an F32 slot (non-quantized) */
         bool aliased = (bp.buf == ctx->embed_f32.buf)
-                    || (bp.buf == ctx->lm_head_f32.buf);
+                    || (bp.buf == ctx->lm_head_f32.buf)
+                    || (bp.buf == ctx->lm_head_quant.buf);
         if (!aliased) {
             for (uint32_t l = 0; l < NL && !aliased; ++l) {
                 auto& lf = ctx->layer_f32[l];
@@ -979,6 +1039,11 @@ inline LlamaContextPtr create_llama_context(
                     bp.buf == lf.v.buf || bp.buf == lf.o.buf ||
                     bp.buf == lf.gate.buf || bp.buf == lf.up.buf ||
                     bp.buf == lf.down.buf) aliased = true;
+                auto& lq = ctx->layer_quant[l];
+                if (bp.buf == lq.q.buf || bp.buf == lq.k.buf ||
+                    bp.buf == lq.v.buf || bp.buf == lq.o.buf ||
+                    bp.buf == lq.gate.buf || bp.buf == lq.up.buf ||
+                    bp.buf == lq.down.buf) aliased = true;
             }
         }
         if (!aliased) llama_release(bp);
@@ -987,11 +1052,13 @@ inline LlamaContextPtr create_llama_context(
 /* PLACEHOLDER_ALLOC_BUFS */
 
     /* ---- Allocate KV cache ---- */
+    nf_dtype act_dt = use_fp16 ? NF_DTYPE_F16 : NF_DTYPE_F32;
+    size_t act_elem = use_fp16 ? sizeof(uint16_t) : sizeof(float);
     ctx->kv_cache.resize(NL * 2);
-    size_t kv_size = (size_t)MS * KV_DIM * sizeof(float);
+    size_t kv_size = (size_t)MS * KV_DIM * act_elem;
     for (uint32_t l = 0; l < NL; ++l) {
-        ctx->kv_cache[l * 2]     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, kv_size);
-        ctx->kv_cache[l * 2 + 1] = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, kv_size);
+        ctx->kv_cache[l * 2]     = llama_alloc_buf(prov, mem_vt, act_dt, kv_size);
+        ctx->kv_cache[l * 2 + 1] = llama_alloc_buf(prov, mem_vt, act_dt, kv_size);
         void* p;
         ctx->kv_cache[l*2].ops.map(ctx->kv_cache[l*2].buf, &p);
         std::memset(p, 0, kv_size);
@@ -1003,40 +1070,41 @@ inline LlamaContextPtr create_llama_context(
 
     /* ---- Allocate activation buffers (sized for max_prefill_seq) ---- */
     uint32_t S = max_prefill_seq;
-    uint32_t act_size  = S * D * sizeof(float);
-    uint32_t kv_act_sz = S * KV_DIM * sizeof(float);
-    uint32_t ff_size   = S * FF * sizeof(float);
+    uint32_t act_size  = S * D * act_elem;
+    uint32_t kv_act_sz = S * KV_DIM * act_elem;
+    uint32_t ff_size   = S * FF * act_elem;
 
     ctx->hidden_bufs.resize(NL + 1);
     for (uint32_t i = 0; i <= NL; ++i)
-        ctx->hidden_bufs[i] = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
+        ctx->hidden_bufs[i] = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
 
-    ctx->normed     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->q_buf      = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->k_buf      = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, kv_act_sz);
-    ctx->v_buf      = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, kv_act_sz);
-    ctx->q_rope_buf = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->k_rope_buf = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, kv_act_sz);
-    ctx->attn_out   = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->proj_out   = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->resid1     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->normed2    = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->gate_out   = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, ff_size);
-    ctx->up_out     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, ff_size);
-    ctx->silu_out   = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, ff_size);
-    ctx->mul_out    = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, ff_size);
-    ctx->down_out   = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
-    ctx->final_normed = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32, act_size);
+    ctx->normed     = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->q_buf      = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->k_buf      = llama_alloc_buf(prov, mem_vt, act_dt, kv_act_sz);
+    ctx->v_buf      = llama_alloc_buf(prov, mem_vt, act_dt, kv_act_sz);
+    ctx->q_rope_buf = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->k_rope_buf = llama_alloc_buf(prov, mem_vt, act_dt, kv_act_sz);
+    ctx->attn_out   = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->proj_out   = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->resid1     = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->normed2    = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->gate_out   = llama_alloc_buf(prov, mem_vt, act_dt, ff_size);
+    ctx->up_out     = llama_alloc_buf(prov, mem_vt, act_dt, ff_size);
+    ctx->silu_out   = llama_alloc_buf(prov, mem_vt, act_dt, ff_size);
+    ctx->mul_out    = llama_alloc_buf(prov, mem_vt, act_dt, ff_size);
+    ctx->down_out   = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
+    ctx->final_normed = llama_alloc_buf(prov, mem_vt, act_dt, act_size);
 
     ctx->token_buf  = llama_alloc_buf(prov, mem_vt, NF_DTYPE_I32,
                                        S * sizeof(int32_t));
+    /* Logits always F32 (sampler needs float) */
     ctx->logits     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32,
                                        S * V * sizeof(float));
     ctx->argmax_out = llama_alloc_buf(prov, mem_vt, NF_DTYPE_I32,
                                        S * sizeof(int32_t));
 
-    std::printf("[llama_ctx] context created: %u layers, %u params F32, KV cache %zu MB\n",
-                NL, NL * 7 + 2, (NL * 2 * kv_size) >> 20);
+    std::printf("[llama_ctx] context created: %u layers, %s, KV cache %zu MB\n",
+                NL, use_fp16 ? "FP16" : "FP32", (NL * 2 * kv_size) >> 20);
     return ctx;
 }
 
@@ -1074,6 +1142,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
     for (uint32_t l = 0; l < NL; ++l) {
         auto& lid = sg.layer_ids[l];
         auto& lf = ctx.layer_f32[l];
+        auto& lq = ctx.layer_quant[l];
         auto& nw = ctx.norm_weights[l];
 
         /* Set dq_* fields to UINT32_MAX (unused — weights are pre-dequantized) */
@@ -1086,13 +1155,24 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
                                    &ctx.normed, 1); }
         engine.add_edge(gid, prev_last, lid.attn_norm);
 
-        /* Q/K/V linear (parallel) */
-        { BufPair ins[] = {ctx.normed, lf.q};
-          lid.q_lin = add_node(engine, gid, "linear", ins, 2, &ctx.q_buf, 1); }
-        { BufPair ins[] = {ctx.normed, lf.k};
-          lid.k_lin = add_node(engine, gid, "linear", ins, 2, &ctx.k_buf, 1); }
-        { BufPair ins[] = {ctx.normed, lf.v};
-          lid.v_lin = add_node(engine, gid, "linear", ins, 2, &ctx.v_buf, 1); }
+        /* Phase 30: fused-aware linear helper */
+        auto fused_or_linear = [&](BufPair& activation, BufPair& f32_weight,
+                                    BufPair& quant_weight, nf_dtype quant_dt,
+                                    BufPair& output) -> uint32_t {
+            const char* fused_op = nf_fused_linear_op_name(quant_dt, ctx.use_fp16);
+            if (fused_op && quant_weight.buf) {
+                BufPair ins[] = {activation, quant_weight};
+                return add_node(engine, gid, fused_op, ins, 2, &output, 1);
+            } else {
+                BufPair ins[] = {activation, f32_weight};
+                return add_node(engine, gid, "linear", ins, 2, &output, 1);
+            }
+        };
+
+        /* Q/K/V linear (parallel) — fused-aware */
+        lid.q_lin = fused_or_linear(ctx.normed, lf.q, lq.q, lq.q_dt, ctx.q_buf);
+        lid.k_lin = fused_or_linear(ctx.normed, lf.k, lq.k, lq.k_dt, ctx.k_buf);
+        lid.v_lin = fused_or_linear(ctx.normed, lf.v, lq.v, lq.v_dt, ctx.v_buf);
         engine.add_edge(gid, lid.attn_norm, lid.q_lin);
         engine.add_edge(gid, lid.attn_norm, lid.k_lin);
         engine.add_edge(gid, lid.attn_norm, lid.v_lin);
@@ -1118,10 +1198,8 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
         engine.add_edge(gid, lid.k_rope, lid.cached_attn);
         engine.add_edge(gid, lid.v_lin, lid.cached_attn);
 
-        /* Output linear */
-        { BufPair ins[] = {ctx.attn_out, lf.o};
-          lid.o_lin = add_node(engine, gid, "linear", ins, 2,
-                               &ctx.proj_out, 1); }
+        /* Output linear — fused-aware */
+        lid.o_lin = fused_or_linear(ctx.attn_out, lf.o, lq.o, lq.o_dt, ctx.proj_out);
         engine.add_edge(gid, lid.cached_attn, lid.o_lin);
 
         /* Residual add: hidden[l] + proj_out → resid1 */
@@ -1137,13 +1215,9 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
                                   &ctx.normed2, 1); }
         engine.add_edge(gid, lid.resid_add1, lid.ffn_norm);
 
-        /* Gate/Up linear (parallel) */
-        { BufPair ins[] = {ctx.normed2, lf.gate};
-          lid.gate_lin = add_node(engine, gid, "linear", ins, 2,
-                                  &ctx.gate_out, 1); }
-        { BufPair ins[] = {ctx.normed2, lf.up};
-          lid.up_lin = add_node(engine, gid, "linear", ins, 2,
-                                &ctx.up_out, 1); }
+        /* Gate/Up linear (parallel) — fused-aware */
+        lid.gate_lin = fused_or_linear(ctx.normed2, lf.gate, lq.gate, lq.gate_dt, ctx.gate_out);
+        lid.up_lin   = fused_or_linear(ctx.normed2, lf.up,   lq.up,   lq.up_dt,   ctx.up_out);
         engine.add_edge(gid, lid.ffn_norm, lid.gate_lin);
         engine.add_edge(gid, lid.ffn_norm, lid.up_lin);
 
@@ -1160,10 +1234,8 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
         engine.add_edge(gid, lid.silu_node, lid.elem_mul);
         engine.add_edge(gid, lid.up_lin, lid.elem_mul);
 
-        /* Down linear: mul_out × w_down → down_out */
-        { BufPair ins[] = {ctx.mul_out, lf.down};
-          lid.down_lin = add_node(engine, gid, "linear", ins, 2,
-                                  &ctx.down_out, 1); }
+        /* Down linear: mul_out × w_down → down_out — fused-aware */
+        lid.down_lin = fused_or_linear(ctx.mul_out, lf.down, lq.down, lq.down_dt, ctx.down_out);
         engine.add_edge(gid, lid.elem_mul, lid.down_lin);
 
         /* Residual add: resid1 + down_out → hidden[l+1] */
@@ -1304,6 +1376,15 @@ inline void release_llama_context(LlamaContext* ctx) {
         llama_release(lf.down);
     }
     llama_release(ctx->lm_head_f32);
+
+    /* Fused quantized weight buffers (Phase 30) */
+    for (auto& lq : ctx->layer_quant) {
+        llama_release(lq.q);  llama_release(lq.k);
+        llama_release(lq.v);  llama_release(lq.o);
+        llama_release(lq.gate); llama_release(lq.up);
+        llama_release(lq.down);
+    }
+    llama_release(ctx->lm_head_quant);
 
     /* Norm weights */
     for (auto& nw : ctx->norm_weights) {

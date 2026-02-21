@@ -129,6 +129,13 @@ target_include_directories(nf_arch_registry_test PRIVATE
 target_link_libraries(nf_arch_registry_test PRIVATE nf_core)
 add_test(NAME arch_registry COMMAND nf_arch_registry_test)
 
+# ---- Phase 28: PSO registry table validation (platform-independent) ----
+add_executable(nf_pso_registry_test pso_registry_test.cpp)
+target_include_directories(nf_pso_registry_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/plugins/metal/src
+)
+add_test(NAME pso_registry COMMAND nf_pso_registry_test)
+
 # ---- Chrome trace export test (platform-independent, mocks Metal timing) ----
 add_executable(nf_chrome_trace_test chrome_trace_test.cpp)
 target_include_directories(nf_chrome_trace_test PRIVATE
@@ -195,6 +202,55 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
     )
     add_test(NAME matmul_bench COMMAND nf_matmul_bench_test)
+
+    # Phase 27: FP16 kernel unit tests
+    add_executable(nf_fp16_kernel_test fp16_kernel_test.cpp)
+    target_link_libraries(nf_fp16_kernel_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_fp16_kernel_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME fp16_kernel COMMAND nf_fp16_kernel_test)
+
+    # Phase 27: FP16 E2E inference test
+    add_executable(nf_fp16_e2e_test fp16_e2e_test.cpp)
+    target_link_libraries(nf_fp16_e2e_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_fp16_e2e_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    add_test(NAME fp16_e2e COMMAND nf_fp16_e2e_test)
+
+    # Phase 28: F16 vs F32 micro-benchmark (built, NOT added to ctest)
+    add_executable(nf_benchmark_kernels benchmark_kernels.cpp)
+    target_link_libraries(nf_benchmark_kernels PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_benchmark_kernels PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+
+    # Phase 29: Fused dequant+linear correctness test
+    add_executable(nf_fused_matmul_test fused_matmul_test.cpp)
+    target_link_libraries(nf_fused_matmul_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_fused_matmul_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME fused_matmul COMMAND nf_fused_matmul_test)
+
+    # Phase 30: Sliding window attention test
+    add_executable(nf_sliding_window_test sliding_window_test.cpp)
+    target_link_libraries(nf_sliding_window_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_sliding_window_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME sliding_window COMMAND nf_sliding_window_test)
+
+    # Phase 30: Fused op DAG integration test (requires NF_TEST_GGUF_PATH)
+    add_executable(nf_fused_warmup_test fused_warmup_test.cpp)
+    target_link_libraries(nf_fused_warmup_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_fused_warmup_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    add_test(NAME fused_warmup COMMAND nf_fused_warmup_test)
 endif()
 
 if(NF_PLUGIN_RKNN)
