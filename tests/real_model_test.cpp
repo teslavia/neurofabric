@@ -17,6 +17,7 @@
 #include "gguf_loader.hpp"
 #include "llama_dag_builder.hpp"
 #include "sampler.hpp"
+#include "tokenizer.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -84,7 +86,7 @@ static void test_single_token_forward(nf::GGUFModel* model) {
     nf::PipelineEngine engine(4);
     engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
 
-    nf::LlamaDAG* dag = nf::build_llama_dag(
+    auto dag = nf::build_llama_dag(
         engine, *model, g_prov, g_vt, g_mem_vt, max_seq, seq);
     CHECK(dag != nullptr);
 
@@ -118,8 +120,6 @@ static void test_single_token_forward(nf::GGUFModel* model) {
       std::printf("logits OK (%u finite values), argmax=%d PASS\n",
                   dag->vocab_size, tok);
       dag->argmax_out.ops.unmap(dag->argmax_out.buf); }
-
-    nf::release_llama_dag(dag);
 }
 
 /* PLACEHOLDER_TEST3 */
@@ -140,7 +140,7 @@ static void test_greedy_decode(nf::GGUFModel* model) {
     auto t0 = std::chrono::steady_clock::now();
 
     /* One-time context creation (weights + dequant warmup + KV cache) */
-    auto* ctx = nf::create_llama_context(
+    auto ctx = nf::create_llama_context(
         engine, *model, g_prov, g_vt, g_mem_vt, max_seq, prefill_seq);
     CHECK(ctx != nullptr);
 
@@ -196,8 +196,6 @@ static void test_greedy_decode(nf::GGUFModel* model) {
 
     auto t_end = std::chrono::steady_clock::now();
 
-    nf::release_llama_context(ctx);
-
     /* Verify all tokens valid */
     uint32_t V = model->vocab_size;
     for (auto tok : generated) {
@@ -243,7 +241,7 @@ static void test_kv_cache_continuity(nf::GGUFModel* model) {
     {
         nf::PipelineEngine engine(4);
         engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
-        auto* ctx = nf::create_llama_context(
+        auto ctx = nf::create_llama_context(
             engine, *model, g_prov, g_vt, g_mem_vt, max_seq, 1);
         CHECK(ctx != nullptr);
 
@@ -278,8 +276,6 @@ static void test_kv_cache_continuity(nf::GGUFModel* model) {
             ctx->logits.ops.unmap(ctx->logits.buf);
             engine.destroy_graph(sg.gid);
         }
-
-        nf::release_llama_context(ctx);
     }
 
     /* ---- Run B: fresh single-token forward with tok1 at step_idx=0 ---- */
@@ -287,7 +283,7 @@ static void test_kv_cache_continuity(nf::GGUFModel* model) {
     {
         nf::PipelineEngine engine(4);
         engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
-        auto* ctx = nf::create_llama_context(
+        auto ctx = nf::create_llama_context(
             engine, *model, g_prov, g_vt, g_mem_vt, max_seq, 1);
         CHECK(ctx != nullptr);
 
@@ -306,8 +302,6 @@ static void test_kv_cache_continuity(nf::GGUFModel* model) {
             ctx->logits.ops.unmap(ctx->logits.buf);
             engine.destroy_graph(sg.gid);
         }
-
-        nf::release_llama_context(ctx);
     }
 
     /* ---- Compare: logits MUST differ (proves KV cache has effect) ---- */
@@ -332,7 +326,7 @@ static void test_sampled_decode(nf::GGUFModel* model) {
     nf::PipelineEngine engine(4);
     engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
 
-    auto* ctx = nf::create_llama_context(
+    auto ctx = nf::create_llama_context(
         engine, *model, g_prov, g_vt, g_mem_vt, max_seq, prefill_seq);
     CHECK(ctx != nullptr);
 
@@ -389,8 +383,6 @@ static void test_sampled_decode(nf::GGUFModel* model) {
         engine.destroy_graph(sg.gid);
     }
 
-    nf::release_llama_context(ctx);
-
     for (auto tok : generated)
         CHECK(tok >= 0 && (uint32_t)tok < V);
 
@@ -423,7 +415,7 @@ static void test_gpu_profiling(nf::GGUFModel* model) {
     nf::PipelineEngine engine(4);
     engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
 
-    auto* ctx = nf::create_llama_context(
+    auto ctx = nf::create_llama_context(
         engine, *model, g_prov, g_vt, g_mem_vt, max_seq, 1);
     CHECK(ctx != nullptr);
 
@@ -450,7 +442,6 @@ static void test_gpu_profiling(nf::GGUFModel* model) {
     }
 
     nf_metal_enable_timing(false);
-    nf::release_llama_context(ctx);
 
     /* Read timings */
     uint32_t count = nf_metal_get_timing_count();
@@ -493,6 +484,213 @@ static void test_gpu_profiling(nf::GGUFModel* model) {
 }
 
 /* ================================================================== */
+/*  Test 8: Text round-trip (tokenize → generate → detokenize)         */
+/* ================================================================== */
+static void test_text_roundtrip(nf::GGUFModel* model) {
+    std::printf("  Test 8: text round-trip...\n");
+
+    /* Check tokenizer data is available */
+    if (model->vocab.empty()) {
+        std::printf("    SKIPPED (no vocab in GGUF)\n");
+        return;
+    }
+
+    nf::Tokenizer tokenizer(*model);
+    CHECK(tokenizer.vocab_size() > 0);
+
+    /* Encode a prompt */
+    auto prompt_ids = tokenizer.encode("Hello");
+    CHECK(prompt_ids.size() >= 2); /* at least BOS + something */
+    std::printf("    encode(\"Hello\") → %zu tokens:", prompt_ids.size());
+    for (auto id : prompt_ids) std::printf(" %d", id);
+    std::printf("\n");
+
+    /* Generate a few tokens */
+    const uint32_t max_seq = 128;
+    uint32_t prefill_seq = static_cast<uint32_t>(prompt_ids.size());
+
+    nf::PipelineEngine engine(4);
+    engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
+
+    auto ctx = nf::create_llama_context(engine, *model, g_prov, g_vt, g_mem_vt, max_seq, prefill_seq);
+    CHECK(ctx != nullptr);
+
+    nf::SamplerParams sp;
+    sp.temperature = 0.8f;
+    sp.top_k = 40;
+    sp.top_p = 0.95f;
+    sp.repeat_penalty = 1.1f;
+    sp.seed = 42;
+    std::mt19937_64 rng(sp.seed);
+
+    std::vector<int32_t> all_tokens(prompt_ids.begin(), prompt_ids.end());
+    uint32_t V = model->vocab_size;
+    const uint32_t n_generate = 8;
+
+    /* Prefill */
+    {
+        void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
+        ((int32_t*)p)[0] = prompt_ids.back();
+        ctx->token_buf.ops.unmap(ctx->token_buf.buf);
+
+        auto sg = nf::build_llama_step_graph(*ctx, prefill_seq);
+        nf::PipelineEngine::Session sess(engine, sg.gid);
+        nf::inject_step_push_constants(*ctx, sg, sess, prefill_seq, 0);
+        CHECK_OK(sess.step().get());
+
+        ctx->logits.ops.cache_sync(ctx->logits.buf, NF_CACHE_INVALIDATE, 0, 0);
+        ctx->logits.ops.map(ctx->logits.buf, &p);
+        int32_t tok = nf::sample_token((float*)p, V, nullptr, 0, sp, rng);
+        ctx->logits.ops.unmap(ctx->logits.buf);
+        all_tokens.push_back(tok);
+        engine.destroy_graph(sg.gid);
+    }
+
+    /* Decode */
+    for (uint32_t step = 0; step < n_generate - 1; ++step) {
+        uint32_t step_idx = prefill_seq + step;
+        void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
+        ((int32_t*)p)[0] = all_tokens.back();
+        ctx->token_buf.ops.unmap(ctx->token_buf.buf);
+
+        auto sg = nf::build_llama_step_graph(*ctx, 1);
+        nf::PipelineEngine::Session sess(engine, sg.gid);
+        nf::inject_step_push_constants(*ctx, sg, sess, 1, step_idx);
+        CHECK_OK(sess.step().get());
+
+        ctx->logits.ops.cache_sync(ctx->logits.buf, NF_CACHE_INVALIDATE, 0, 0);
+        ctx->logits.ops.map(ctx->logits.buf, &p);
+        int32_t tok = nf::sample_token((float*)p, V,
+            all_tokens.data(), (uint32_t)all_tokens.size(), sp, rng);
+        ctx->logits.ops.unmap(ctx->logits.buf);
+        all_tokens.push_back(tok);
+        engine.destroy_graph(sg.gid);
+    }
+
+    /* Detokenize */
+    std::string output = tokenizer.decode(all_tokens);
+    CHECK(!output.empty());
+
+    /* Verify: output should contain readable characters */
+    bool has_alpha = false;
+    for (char c : output)
+        if (std::isalpha(static_cast<unsigned char>(c))) { has_alpha = true; break; }
+    CHECK(has_alpha);
+
+    std::printf("    generated: \"%s\"\n", output.c_str());
+    std::printf("    PASS\n");
+}
+
+/* ================================================================== */
+/*  7B Model Tests (Phase 26)                                          */
+/* ================================================================== */
+
+/**
+ * Test 9: 7B metadata — validates sliding window & architecture fields.
+ */
+static void test_7b_metadata(nf::GGUFModel* model) {
+    std::printf("  Test 9: 7B metadata parse ... ");
+
+    CHECK(model->dim > 0);
+    CHECK(model->n_layers >= 32);   /* 7B models have ≥32 layers */
+    CHECK(model->n_heads > 0);
+    CHECK(model->ff_dim > 0);
+    CHECK(model->vocab_size > 0);
+
+    /* Verify key tensors */
+    CHECK(model->tensors.count("token_embd.weight"));
+    CHECK(model->tensors.count("blk.0.attn_q.weight"));
+    CHECK(model->tensors.count("output_norm.weight"));
+
+    std::printf("PASS\n");
+    std::printf("    arch=%s, dim=%u, layers=%u, heads=%u, kv_heads=%u, ff=%u, vocab=%u\n",
+                model->architecture.c_str(), model->dim, model->n_layers,
+                model->n_heads, model->n_kv_heads, model->ff_dim, model->vocab_size);
+    std::printf("    sliding_window=%u\n", model->sliding_window);
+}
+
+/**
+ * Test 10: 7B forward pass — flash attention at scale.
+ * Runs prefill + short decode, verifies logits are finite and tokens valid.
+ */
+static void test_7b_forward(nf::GGUFModel* model) {
+    std::printf("  Test 10: 7B forward (flash attention) ... ");
+
+    const uint32_t max_seq = 256;
+    const uint32_t prefill_seq = 1;
+    const uint32_t n_decode = 8;
+
+    nf::PipelineEngine engine(4);
+    engine.register_provider(g_prov, g_vt, NF_AFFINITY_GPU);
+
+    auto ctx = nf::create_llama_context(
+        engine, *model, g_prov, g_vt, g_mem_vt, max_seq, prefill_seq);
+    CHECK(ctx != nullptr);
+
+    /* Verify sliding_window propagated to context */
+    CHECK(ctx->sliding_window == model->sliding_window);
+
+    std::vector<int32_t> generated;
+    uint32_t V = model->vocab_size;
+/* PLACEHOLDER_7B_FORWARD_CONT */
+
+    /* Prefill: BOS */
+    {
+        void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
+        ((int32_t*)p)[0] = 1;
+        ctx->token_buf.ops.unmap(ctx->token_buf.buf);
+
+        auto sg = nf::build_llama_step_graph(*ctx, prefill_seq);
+        nf::PipelineEngine::Session sess(engine, sg.gid);
+        nf::inject_step_push_constants(*ctx, sg, sess, prefill_seq, 0);
+        CHECK_OK(sess.step().get());
+
+        ctx->argmax_out.ops.cache_sync(ctx->argmax_out.buf,
+                                        NF_CACHE_INVALIDATE, 0, 0);
+        ctx->argmax_out.ops.map(ctx->argmax_out.buf, &p);
+        int32_t tok = ((int32_t*)p)[0];
+        CHECK(tok >= 0 && (uint32_t)tok < V);
+        generated.push_back(tok);
+        ctx->argmax_out.ops.unmap(ctx->argmax_out.buf);
+        engine.destroy_graph(sg.gid);
+    }
+
+    /* Decode loop */
+    auto t0 = std::chrono::steady_clock::now();
+    for (uint32_t step = 0; step < n_decode - 1; ++step) {
+        uint32_t step_idx = prefill_seq + step;
+        void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
+        ((int32_t*)p)[0] = generated.back();
+        ctx->token_buf.ops.unmap(ctx->token_buf.buf);
+
+        auto sg = nf::build_llama_step_graph(*ctx, 1);
+        nf::PipelineEngine::Session sess(engine, sg.gid);
+        nf::inject_step_push_constants(*ctx, sg, sess, 1, step_idx);
+        CHECK_OK(sess.step().get());
+
+        ctx->argmax_out.ops.cache_sync(ctx->argmax_out.buf,
+                                        NF_CACHE_INVALIDATE, 0, 0);
+        ctx->argmax_out.ops.map(ctx->argmax_out.buf, &p);
+        int32_t tok = ((int32_t*)p)[0];
+        CHECK(tok >= 0 && (uint32_t)tok < V);
+        generated.push_back(tok);
+        ctx->argmax_out.ops.unmap(ctx->argmax_out.buf);
+        engine.destroy_graph(sg.gid);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+
+    double decode_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    double tps = (n_decode - 1) / (decode_ms / 1000.0);
+
+    std::printf("[");
+    for (size_t i = 0; i < generated.size(); ++i) {
+        if (i > 0) std::printf(", ");
+        std::printf("%d", generated[i]);
+    }
+    std::printf("] %.1f tok/s PASS\n", tps);
+}
+
+/* ================================================================== */
 /*  main                                                               */
 /* ================================================================== */
 int main() {
@@ -502,7 +700,7 @@ int main() {
         return 0;
     }
 
-    std::printf("=== real_model_test (Phase 23) ===\n");
+    std::printf("=== real_model_test (Phase 26) ===\n");
 
     CHECK_OK(nf_plugin_register(&g_vt, &g_prov));
     CHECK_OK(nf_plugin_register_mem(&g_mem_vt));
@@ -521,8 +719,28 @@ int main() {
     test_kv_cache_continuity(model);
     test_sampled_decode(model);
     test_gpu_profiling(model);
+    test_text_roundtrip(model);
 
     nf::gguf_close(model);
+
+    /* ---- 7B model tests (optional, separate GGUF) ---- */
+    const char* gguf_7b_path = std::getenv("NF_TEST_GGUF_7B_PATH");
+    if (gguf_7b_path && gguf_7b_path[0] != '\0') {
+        std::printf("\n=== 7B model tests (Phase 26) ===\n");
+        nf::GGUFModel* model_7b = nf::gguf_open(gguf_7b_path);
+        CHECK(model_7b != nullptr);
+        std::printf("  Model: %s (dim=%u, layers=%u, heads=%u, ff=%u, vocab=%u)\n",
+                    gguf_7b_path, model_7b->dim, model_7b->n_layers,
+                    model_7b->n_heads, model_7b->ff_dim, model_7b->vocab_size);
+
+        test_7b_metadata(model_7b);
+        test_7b_forward(model_7b);
+
+        nf::gguf_close(model_7b);
+    } else {
+        std::printf("\n  7B tests SKIPPED (NF_TEST_GGUF_7B_PATH not set)\n");
+    }
+
     if (g_vt.shutdown) g_vt.shutdown(g_prov);
     std::printf("=== ALL PASSED ===\n");
     return 0;

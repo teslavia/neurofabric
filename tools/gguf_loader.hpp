@@ -109,6 +109,22 @@ struct GGUFModel {
     float    rms_norm_eps = 1e-5f;
     uint32_t alignment = 32;
 
+    /* Architecture metadata (Phase 26) */
+    std::string architecture;     /* "llama", "mistral", "phi", etc. */
+    uint32_t sliding_window = 0;  /* 0 = full causal, >0 = sliding window */
+
+    /* Tokenizer metadata (Phase 24) */
+    std::string              tokenizer_model;  /* "llama", "gpt2", etc. */
+    std::vector<std::string> vocab;            /* token strings */
+    std::vector<float>       scores;           /* SentencePiece scores */
+    std::vector<int32_t>     token_types;      /* normal/unknown/control/... */
+    std::vector<std::string> merges;           /* BPE merge rules */
+    uint32_t bos_id = 1;
+    uint32_t eos_id = 2;
+    uint32_t unk_id = 0;
+    bool     add_bos = true;
+    bool     add_eos = false;
+
     /* Tensor map: GGUF name → info with pointer into mmap */
     std::unordered_map<std::string, GGUFTensorInfo> tensors;
 };
@@ -240,12 +256,48 @@ inline GGUFModel* gguf_open(const char* path) {
             m->rms_norm_eps = r.read<float>();
         } else if (key == "general.alignment" && vtype == GGUF_TYPE_UINT32) {
             m->alignment = r.read<uint32_t>();
+        } else if (key == "general.architecture" && vtype == GGUF_TYPE_STRING) {
+            m->architecture = r.read_string();
+        } else if (key == "llama.attention.sliding_window" && vtype == GGUF_TYPE_UINT32) {
+            m->sliding_window = r.read<uint32_t>();
         } else if (key == "tokenizer.ggml.tokens" && vtype == GGUF_TYPE_ARRAY) {
-            /* Array count gives vocab_size */
-            size_t saved = r.pos();
-            m->vocab_size = static_cast<uint32_t>(r.read_array_length());
-            r.set_pos(saved);
-            r.skip_value(vtype);
+            /* String array: token vocabulary */
+            uint32_t elem_type = r.read<uint32_t>();
+            uint64_t count = r.read<uint64_t>();
+            m->vocab_size = static_cast<uint32_t>(count);
+            m->vocab.resize(count);
+            for (uint64_t j = 0; j < count; ++j)
+                m->vocab[j] = r.read_string();
+        } else if (key == "tokenizer.ggml.scores" && vtype == GGUF_TYPE_ARRAY) {
+            uint32_t elem_type = r.read<uint32_t>();
+            uint64_t count = r.read<uint64_t>();
+            m->scores.resize(count);
+            for (uint64_t j = 0; j < count; ++j)
+                m->scores[j] = r.read<float>();
+        } else if (key == "tokenizer.ggml.token_type" && vtype == GGUF_TYPE_ARRAY) {
+            uint32_t elem_type = r.read<uint32_t>();
+            uint64_t count = r.read<uint64_t>();
+            m->token_types.resize(count);
+            for (uint64_t j = 0; j < count; ++j)
+                m->token_types[j] = r.read<int32_t>();
+        } else if (key == "tokenizer.ggml.merges" && vtype == GGUF_TYPE_ARRAY) {
+            uint32_t elem_type = r.read<uint32_t>();
+            uint64_t count = r.read<uint64_t>();
+            m->merges.resize(count);
+            for (uint64_t j = 0; j < count; ++j)
+                m->merges[j] = r.read_string();
+        } else if (key == "tokenizer.ggml.model" && vtype == GGUF_TYPE_STRING) {
+            m->tokenizer_model = r.read_string();
+        } else if (key == "tokenizer.ggml.bos_token_id" && vtype == GGUF_TYPE_UINT32) {
+            m->bos_id = r.read<uint32_t>();
+        } else if (key == "tokenizer.ggml.eos_token_id" && vtype == GGUF_TYPE_UINT32) {
+            m->eos_id = r.read<uint32_t>();
+        } else if (key == "tokenizer.ggml.unknown_token_id" && vtype == GGUF_TYPE_UINT32) {
+            m->unk_id = r.read<uint32_t>();
+        } else if (key == "tokenizer.ggml.add_bos_token" && vtype == GGUF_TYPE_BOOL) {
+            m->add_bos = r.read<uint8_t>() != 0;
+        } else if (key == "tokenizer.ggml.add_eos_token" && vtype == GGUF_TYPE_BOOL) {
+            m->add_eos = r.read<uint8_t>() != 0;
         } else {
             r.skip_value(vtype);
         }

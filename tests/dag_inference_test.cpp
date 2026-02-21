@@ -49,6 +49,7 @@ struct PushConstants {
     float epsilon; float theta;
     uint32_t M; uint32_t N; uint32_t K;
     uint32_t step_idx; uint32_t max_seq_len;
+    uint32_t window_size; uint32_t _pad1;
 };
 struct BufPair {
     nf_buffer buf = nullptr;

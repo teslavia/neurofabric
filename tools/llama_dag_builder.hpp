@@ -13,6 +13,7 @@
 #define NF_LLAMA_DAG_BUILDER_HPP
 
 #include "gguf_loader.hpp"
+#include "quant_registry.hpp"
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
 #include "neurofabric/neuro_scheduler_abi.h"
@@ -21,6 +22,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,7 @@ struct PushConstants {
     float epsilon; float theta;
     uint32_t M; uint32_t N; uint32_t K;
     uint32_t step_idx; uint32_t max_seq_len;
+    uint32_t window_size; uint32_t _pad1;
 };
 
 
@@ -168,12 +171,17 @@ static inline uint32_t add_node(
 }
 
 
+/* Forward declarations for custom deleters */
+inline void release_llama_dag(LlamaDAG* dag);
+struct LlamaContext;
+inline void release_llama_context(LlamaContext* ctx);
+
 /**
  * Build the full LLaMA DAG from GGUF model metadata.
  * Loads all weights from mmap into Metal unified buffers.
  * Returns heap-allocated LlamaDAG* on success, nullptr on failure.
  */
-inline LlamaDAG* build_llama_dag(
+inline std::unique_ptr<LlamaDAG, void(*)(LlamaDAG*)> build_llama_dag(
     PipelineEngine& engine,
     const GGUFModel& model,
     nf_provider prov,
@@ -182,7 +190,9 @@ inline LlamaDAG* build_llama_dag(
     uint32_t max_seq_override,
     uint32_t seq_len)
 {
-    auto* dag = new LlamaDAG;
+    using DagPtr = std::unique_ptr<LlamaDAG, void(*)(LlamaDAG*)>;
+    auto fail = [](){ return DagPtr(nullptr, release_llama_dag); };
+    DagPtr dag(new LlamaDAG, release_llama_dag);
     dag->engine = &engine;
     dag->dim = model.dim;
     dag->n_layers = model.n_layers;
@@ -223,27 +233,13 @@ inline LlamaDAG* build_llama_dag(
     };
 
 
-    auto is_quantized = [](uint32_t dtype) {
-        return dtype == GGUF_DTYPE_Q4_0 || dtype == GGUF_DTYPE_Q8_0
-            || dtype == GGUF_DTYPE_Q6_K;
-    };
-    auto nf_dtype_for = [&](uint32_t gguf_dtype) -> nf_dtype {
-        if (gguf_dtype == GGUF_DTYPE_Q4_0) return NF_DTYPE_Q4_0;
-        if (gguf_dtype == GGUF_DTYPE_Q8_0) return NF_DTYPE_Q8_0;
-        if (gguf_dtype == GGUF_DTYPE_Q6_K) return NF_DTYPE_U8;  /* raw bytes */
-        if (gguf_dtype == GGUF_DTYPE_F16)  return NF_DTYPE_F16;
-        return NF_DTYPE_F32;
-    };
-    auto dequant_op = [](uint32_t gguf_dtype) -> const char* {
-        if (gguf_dtype == GGUF_DTYPE_Q4_0) return "dequant_q4_0";
-        if (gguf_dtype == GGUF_DTYPE_Q8_0) return "dequant_q8_0";
-        if (gguf_dtype == GGUF_DTYPE_Q6_K) return "dequant_q6_k";
-        return nullptr;
-    };
+    auto is_quantized = [](uint32_t dtype) { return nf_is_quantized(dtype); };
+    auto nf_dtype_for = [&](uint32_t gguf_dtype) -> nf_dtype { return nf_dtype_for_gguf(gguf_dtype); };
+    auto dequant_op = [](uint32_t gguf_dtype) -> const char* { return nf_dequant_op_name(gguf_dtype); };
 
     /* Load embedding weight */
     auto* emb_ti = find_tensor("token_embd.weight");
-    if (!emb_ti) { delete dag; return nullptr; }
+    if (!emb_ti) { return fail(); }
     BufPair w_embed = load_weight(prov, mem_vt, *emb_ti, nf_dtype_for(emb_ti->gguf_dtype));
     dag->weight_bufs.push_back(w_embed);
 
@@ -266,7 +262,7 @@ inline LlamaDAG* build_llama_dag(
 
         std::snprintf(name, sizeof(name), "blk.%u.attn_norm.weight", l);
         auto* ti = find_tensor(name);
-        if (!ti) { delete dag; return nullptr; }
+        if (!ti) { return fail(); }
         lw.w_attn_norm = load_weight(prov, mem_vt, *ti, NF_DTYPE_F32);
         dag->weight_bufs.push_back(lw.w_attn_norm);
 
@@ -280,30 +276,30 @@ inline LlamaDAG* build_llama_dag(
             return true;
         };
 
-        if (!load_w("attn_q",    lw.w_q,    lw.q_dtype))    { delete dag; return nullptr; }
-        if (!load_w("attn_k",    lw.w_k,    lw.k_dtype))    { delete dag; return nullptr; }
-        if (!load_w("attn_v",    lw.w_v,    lw.v_dtype))    { delete dag; return nullptr; }
-        if (!load_w("attn_output", lw.w_o,  lw.o_dtype))    { delete dag; return nullptr; }
+        if (!load_w("attn_q",    lw.w_q,    lw.q_dtype))    { return fail(); }
+        if (!load_w("attn_k",    lw.w_k,    lw.k_dtype))    { return fail(); }
+        if (!load_w("attn_v",    lw.w_v,    lw.v_dtype))    { return fail(); }
+        if (!load_w("attn_output", lw.w_o,  lw.o_dtype))    { return fail(); }
 
         std::snprintf(name, sizeof(name), "blk.%u.ffn_norm.weight", l);
         ti = find_tensor(name);
-        if (!ti) { delete dag; return nullptr; }
+        if (!ti) { return fail(); }
         lw.w_ffn_norm = load_weight(prov, mem_vt, *ti, NF_DTYPE_F32);
         dag->weight_bufs.push_back(lw.w_ffn_norm);
 
-        if (!load_w("ffn_gate",  lw.w_gate, lw.gate_dtype)) { delete dag; return nullptr; }
-        if (!load_w("ffn_up",    lw.w_up,   lw.up_dtype))   { delete dag; return nullptr; }
-        if (!load_w("ffn_down",  lw.w_down, lw.down_dtype)) { delete dag; return nullptr; }
+        if (!load_w("ffn_gate",  lw.w_gate, lw.gate_dtype)) { return fail(); }
+        if (!load_w("ffn_up",    lw.w_up,   lw.up_dtype))   { return fail(); }
+        if (!load_w("ffn_down",  lw.w_down, lw.down_dtype)) { return fail(); }
     }
 
     /* Final norm + output (LM head) weights */
     auto* fn_ti = find_tensor("output_norm.weight");
-    if (!fn_ti) { delete dag; return nullptr; }
+    if (!fn_ti) { return fail(); }
     BufPair w_final_norm = load_weight(prov, mem_vt, *fn_ti, NF_DTYPE_F32);
     dag->weight_bufs.push_back(w_final_norm);
 
     auto* lm_ti = find_tensor("output.weight");
-    if (!lm_ti) { delete dag; return nullptr; }
+    if (!lm_ti) { return fail(); }
     BufPair w_lm_head = load_weight(prov, mem_vt, *lm_ti, nf_dtype_for(lm_ti->gguf_dtype));
     dag->weight_bufs.push_back(w_lm_head);
 
@@ -447,7 +443,7 @@ inline LlamaDAG* build_llama_dag(
         /* causal_attention_cached: q_rope, k_rope, v, cache_k, cache_v → attn_out */
         { BufPair ins[] = {dag->q_rope_buf, dag->k_rope_buf, dag->v_buf,
                            dag->kv_cache[l*2], dag->kv_cache[l*2+1]};
-          lid.cached_attn = add_node(engine, gid, "causal_attention_cached",
+          lid.cached_attn = add_node(engine, gid, "flash_attention_cached",
                                      ins, 5, &dag->attn_out, 1); }
         engine.add_edge(gid, lid.q_rope, lid.cached_attn);
         engine.add_edge(gid, lid.k_rope, lid.cached_attn);
@@ -711,6 +707,7 @@ struct LlamaContext {
     uint32_t dim, n_layers, n_heads, n_kv_heads, head_dim;
     uint32_t ff_dim, vocab_size, max_seq;
     float rope_theta, rms_norm_eps;
+    uint32_t sliding_window = 0;  /* 0 = full causal, >0 = sliding (Mistral) */
 
     /* Pre-dequantized F32 weight buffers (computed once via warmup DAG) */
     struct LayerF32Weights {
@@ -753,7 +750,9 @@ struct StepGraph {
  * One-time setup: load weights, dequant via warmup DAG, allocate KV cache
  * and activation buffers. After this, all weights are F32.
  */
-inline LlamaContext* create_llama_context(
+using LlamaContextPtr = std::unique_ptr<LlamaContext, void(*)(LlamaContext*)>;
+
+inline LlamaContextPtr create_llama_context(
     PipelineEngine& engine,
     const GGUFModel& model,
     nf_provider prov,
@@ -762,7 +761,8 @@ inline LlamaContext* create_llama_context(
     uint32_t max_seq,
     uint32_t max_prefill_seq)
 {
-    auto* ctx = new LlamaContext;
+    auto fail = [](){ return LlamaContextPtr(nullptr, release_llama_context); };
+    LlamaContextPtr ctx(new LlamaContext, release_llama_context);
     ctx->engine = &engine;
     ctx->prov = prov;
     ctx->vt = vt;
@@ -778,6 +778,7 @@ inline LlamaContext* create_llama_context(
     ctx->max_seq = max_seq;
     ctx->rope_theta = model.rope_theta;
     ctx->rms_norm_eps = model.rms_norm_eps;
+    ctx->sliding_window = model.sliding_window;
 
     const uint32_t D = ctx->dim;
     const uint32_t HD = ctx->head_dim;
@@ -796,23 +797,9 @@ inline LlamaContext* create_llama_context(
         }
         return &it->second;
     };
-    auto is_quantized = [](uint32_t dtype) {
-        return dtype == GGUF_DTYPE_Q4_0 || dtype == GGUF_DTYPE_Q8_0
-            || dtype == GGUF_DTYPE_Q6_K;
-    };
-    auto nf_dtype_for = [&](uint32_t gguf_dtype) -> nf_dtype {
-        if (gguf_dtype == GGUF_DTYPE_Q4_0) return NF_DTYPE_Q4_0;
-        if (gguf_dtype == GGUF_DTYPE_Q8_0) return NF_DTYPE_Q8_0;
-        if (gguf_dtype == GGUF_DTYPE_Q6_K) return NF_DTYPE_U8;
-        if (gguf_dtype == GGUF_DTYPE_F16)  return NF_DTYPE_F16;
-        return NF_DTYPE_F32;
-    };
-    auto dequant_op_name = [](uint32_t gguf_dtype) -> const char* {
-        if (gguf_dtype == GGUF_DTYPE_Q4_0) return "dequant_q4_0";
-        if (gguf_dtype == GGUF_DTYPE_Q8_0) return "dequant_q8_0";
-        if (gguf_dtype == GGUF_DTYPE_Q6_K) return "dequant_q6_k";
-        return nullptr;
-    };
+    auto is_quantized = [](uint32_t dtype) { return nf_is_quantized(dtype); };
+    auto nf_dtype_for = [&](uint32_t gguf_dtype) -> nf_dtype { return nf_dtype_for_gguf(gguf_dtype); };
+    auto dequant_op_name = [](uint32_t gguf_dtype) -> const char* { return nf_dequant_op_name(gguf_dtype); };
 
     /* ---- Load raw weights + allocate F32 output buffers ---- */
 
@@ -821,7 +808,7 @@ inline LlamaContext* create_llama_context(
 
     /* Embedding */
     auto* emb_ti = find_tensor("token_embd.weight");
-    if (!emb_ti) { delete ctx; return nullptr; }
+    if (!emb_ti) { return fail(); }
     BufPair w_embed_raw = load_weight(prov, mem_vt, *emb_ti, nf_dtype_for(emb_ti->gguf_dtype));
     raw_weight_bufs.push_back(w_embed_raw);
     ctx->embed_f32 = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32,
@@ -846,12 +833,12 @@ inline LlamaContext* create_llama_context(
         /* Norm weights (always F32, kept permanently) */
         std::snprintf(name, sizeof(name), "blk.%u.attn_norm.weight", l);
         auto* ti = find_tensor(name);
-        if (!ti) { delete ctx; return nullptr; }
+        if (!ti) { return fail(); }
         ctx->norm_weights[l].attn_norm = load_weight(prov, mem_vt, *ti, NF_DTYPE_F32);
 
         std::snprintf(name, sizeof(name), "blk.%u.ffn_norm.weight", l);
         ti = find_tensor(name);
-        if (!ti) { delete ctx; return nullptr; }
+        if (!ti) { return fail(); }
         ctx->norm_weights[l].ffn_norm = load_weight(prov, mem_vt, *ti, NF_DTYPE_F32);
 
 /* PLACEHOLDER_LAYER_WEIGHTS */
@@ -867,13 +854,13 @@ inline LlamaContext* create_llama_context(
             return true;
         };
 
-        if (!load_raw("attn_q",      rl.w_q,    rl.q_dtype))    { delete ctx; return nullptr; }
-        if (!load_raw("attn_k",      rl.w_k,    rl.k_dtype))    { delete ctx; return nullptr; }
-        if (!load_raw("attn_v",      rl.w_v,    rl.v_dtype))    { delete ctx; return nullptr; }
-        if (!load_raw("attn_output", rl.w_o,    rl.o_dtype))    { delete ctx; return nullptr; }
-        if (!load_raw("ffn_gate",    rl.w_gate, rl.gate_dtype)) { delete ctx; return nullptr; }
-        if (!load_raw("ffn_up",      rl.w_up,   rl.up_dtype))   { delete ctx; return nullptr; }
-        if (!load_raw("ffn_down",    rl.w_down, rl.down_dtype)) { delete ctx; return nullptr; }
+        if (!load_raw("attn_q",      rl.w_q,    rl.q_dtype))    { return fail(); }
+        if (!load_raw("attn_k",      rl.w_k,    rl.k_dtype))    { return fail(); }
+        if (!load_raw("attn_v",      rl.w_v,    rl.v_dtype))    { return fail(); }
+        if (!load_raw("attn_output", rl.w_o,    rl.o_dtype))    { return fail(); }
+        if (!load_raw("ffn_gate",    rl.w_gate, rl.gate_dtype)) { return fail(); }
+        if (!load_raw("ffn_up",      rl.w_up,   rl.up_dtype))   { return fail(); }
+        if (!load_raw("ffn_down",    rl.w_down, rl.down_dtype)) { return fail(); }
 
         /* Allocate F32 output buffers for dequant */
         size_t dq_dim2 = (size_t)D * D * sizeof(float);
@@ -901,11 +888,11 @@ inline LlamaContext* create_llama_context(
 
     /* Final norm (F32) + LM head */
     auto* fn_ti = find_tensor("output_norm.weight");
-    if (!fn_ti) { delete ctx; return nullptr; }
+    if (!fn_ti) { return fail(); }
     ctx->final_norm_weight = load_weight(prov, mem_vt, *fn_ti, NF_DTYPE_F32);
 
     auto* lm_ti = find_tensor("output.weight");
-    if (!lm_ti) { delete ctx; return nullptr; }
+    if (!lm_ti) { return fail(); }
     BufPair w_lm_raw = load_weight(prov, mem_vt, *lm_ti, nf_dtype_for(lm_ti->gguf_dtype));
     raw_weight_bufs.push_back(w_lm_raw);
     uint32_t lm_gguf_dtype = lm_ti->gguf_dtype;
@@ -974,7 +961,7 @@ inline LlamaContext* create_llama_context(
             nf_status st = warmup.step().get();
             if (st != NF_OK) {
                 std::fprintf(stderr, "[llama_ctx] warmup dequant failed: %d\n", st);
-                delete ctx; return nullptr;
+                return fail();
             }
         }
         engine.destroy_graph(wgid);
@@ -1125,7 +1112,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
         /* causal_attention_cached */
         { BufPair ins[] = {ctx.q_rope_buf, ctx.k_rope_buf, ctx.v_buf,
                            ctx.kv_cache[l*2], ctx.kv_cache[l*2+1]};
-          lid.cached_attn = add_node(engine, gid, "causal_attention_cached",
+          lid.cached_attn = add_node(engine, gid, "flash_attention_cached",
                                      ins, 5, &ctx.attn_out, 1); }
         engine.add_edge(gid, lid.q_rope, lid.cached_attn);
         engine.add_edge(gid, lid.k_rope, lid.cached_attn);
@@ -1268,6 +1255,7 @@ inline void inject_step_push_constants(
         { PushConstants apc{};
           apc.seq_len = seq_len; apc.n_heads = NH; apc.head_dim = HD;
           apc.M = NKV; apc.step_idx = step_idx; apc.max_seq_len = MS;
+          apc.window_size = ctx.sliding_window;
           sess.set_push_constants_by_id(lid.cached_attn, &apc, sizeof(apc)); }
 
         /* Output linear: M=seq_len, N=D, K=D */

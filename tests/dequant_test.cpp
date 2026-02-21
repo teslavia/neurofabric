@@ -138,7 +138,9 @@ struct PushConstants {
     uint32_t N;
     uint32_t K;
     uint32_t step_idx;
-    uint32_t _pad0;
+    uint32_t max_seq_len;
+    uint32_t window_size;
+    uint32_t _pad1;
 };
 
 /* PLACEHOLDER_TESTS */

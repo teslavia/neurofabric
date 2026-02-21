@@ -255,8 +255,8 @@ public:
         if (!buf_ || !ops_.retain || !ops_.get_info) return {};
 
         nf_buffer_info bi = info();
-        assert(dim < bi.desc.ndim && "slice dim out of range");
-        assert(begin < end && end <= bi.desc.shape[dim]);
+        if (dim >= bi.desc.ndim) return {};
+        if (begin >= end || end > bi.desc.shape[dim]) return {};
 
         // Compute byte offset for the slice start
         uint64_t stride = bi.desc.strides[dim];

@@ -92,8 +92,12 @@ static nf_status chunked_send(int sock, const uint8_t* data, uint64_t len,
         int chunk = static_cast<int>(
             remaining < NF_PAYLOAD_CHUNK_SIZE ? remaining : NF_PAYLOAD_CHUNK_SIZE);
 
+        int flags = 0;
+#ifdef __linux__
+        flags = MSG_NOSIGNAL;
+#endif
         auto n = ::send(sock, reinterpret_cast<const char*>(data + sent),
-                        chunk, 0);
+                        chunk, flags);
         if (n < 0) {
 #ifndef _WIN32
             if (errno == EAGAIN || errno == EWOULDBLOCK) continue;

@@ -111,6 +111,33 @@ target_include_directories(nf_push_constants_test PRIVATE
 )
 add_test(NAME push_constants COMMAND nf_push_constants_test)
 
+# ---- Tokenizer test (platform-independent, no Metal/RKNN dependency) ----
+add_executable(nf_tokenizer_test tokenizer_test.cpp)
+target_include_directories(nf_tokenizer_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_tokenizer_test PRIVATE nf_core)
+add_test(NAME tokenizer COMMAND nf_tokenizer_test)
+
+# ---- Architecture registry test (platform-independent) ----
+add_executable(nf_arch_registry_test arch_registry_test.cpp)
+target_include_directories(nf_arch_registry_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_arch_registry_test PRIVATE nf_core)
+add_test(NAME arch_registry COMMAND nf_arch_registry_test)
+
+# ---- Chrome trace export test (platform-independent, mocks Metal timing) ----
+add_executable(nf_chrome_trace_test chrome_trace_test.cpp)
+target_include_directories(nf_chrome_trace_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_chrome_trace_test PRIVATE nf_core)
+add_test(NAME chrome_trace COMMAND nf_chrome_trace_test)
+
 if(NF_PLUGIN_METAL)
     add_executable(nf_silicon_test silicon_test.cpp)
     target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)
@@ -125,6 +152,13 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
     )
     add_test(NAME dequant COMMAND nf_dequant_test)
+
+    add_executable(nf_kquant_dequant_test kquant_dequant_test.cpp)
+    target_link_libraries(nf_kquant_dequant_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_kquant_dequant_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME kquant_dequant COMMAND nf_kquant_dequant_test)
 
     add_executable(nf_transformer_test transformer_test.cpp)
     target_link_libraries(nf_transformer_test PRIVATE nf_core nf_plugin_metal)
@@ -154,6 +188,13 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/tools
     )
     add_test(NAME real_model COMMAND nf_real_model_test)
+
+    add_executable(nf_matmul_bench_test matmul_bench_test.cpp)
+    target_link_libraries(nf_matmul_bench_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_matmul_bench_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME matmul_bench COMMAND nf_matmul_bench_test)
 endif()
 
 if(NF_PLUGIN_RKNN)

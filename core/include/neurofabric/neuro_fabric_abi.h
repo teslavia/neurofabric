@@ -99,8 +99,16 @@ typedef enum nf_dtype {
     NF_DTYPE_I8    = 3,
     NF_DTYPE_I32   = 4,
     NF_DTYPE_U8    = 5,
-    NF_DTYPE_Q4_0  = 6,   /**< ggml Q4_0: 18 bytes/block, 32 elements/block */
-    NF_DTYPE_Q8_0  = 7    /**< ggml Q8_0: 34 bytes/block, 32 elements/block */
+    NF_DTYPE_Q4_0  = 6,   /**< ggml Q4_0: 18B/block, 32 elem/block */
+    NF_DTYPE_Q8_0  = 7,   /**< ggml Q8_0: 34B/block, 32 elem/block */
+    NF_DTYPE_Q4_1  = 8,   /**< ggml Q4_1: 20B/block, 32 elem/block */
+    NF_DTYPE_Q5_0  = 9,   /**< ggml Q5_0: 22B/block, 32 elem/block */
+    NF_DTYPE_Q5_1  = 10,  /**< ggml Q5_1: 24B/block, 32 elem/block */
+    NF_DTYPE_Q2_K  = 11,  /**< ggml Q2_K: 84B/block, 256 elem/block */
+    NF_DTYPE_Q3_K  = 12,  /**< ggml Q3_K: 110B/block, 256 elem/block */
+    NF_DTYPE_Q4_K  = 13,  /**< ggml Q4_K: 144B/block, 256 elem/block */
+    NF_DTYPE_Q5_K  = 14,  /**< ggml Q5_K: 176B/block, 256 elem/block */
+    NF_DTYPE_Q6_K  = 15   /**< ggml Q6_K: 210B/block, 256 elem/block */
 } nf_dtype;
 
 #define NF_MAX_DIMS 8

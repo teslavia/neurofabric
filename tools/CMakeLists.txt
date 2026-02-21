@@ -32,3 +32,18 @@ if(NF_PLUGIN_RKNN)
         target_link_libraries(nf_node_cli PRIVATE ${RKNN_RT})
     endif()
 endif()
+
+# ---- nf_generate: text generation CLI (Metal only) ----
+if(NF_PLUGIN_METAL)
+    add_executable(nf_generate
+        nf_generate.cpp
+        ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+        ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+    )
+    target_include_directories(nf_generate PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/src
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    target_link_libraries(nf_generate PRIVATE nf_core nf_plugin_metal)
+endif()

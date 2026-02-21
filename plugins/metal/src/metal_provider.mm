@@ -72,7 +72,9 @@ struct PushConstants {
     uint  N;
     uint  K;
     uint  step_idx;
-    uint  max_seq_len;  // KV cache max capacity (was _pad0)
+    uint  max_seq_len;  // KV cache max capacity
+    uint  window_size;  // 0 = full causal, >0 = sliding window (Mistral)
+    uint  _pad1;
 };
 
 kernel void rms_norm(device const float* in       [[buffer(0)]],
@@ -316,6 +318,169 @@ kernel void causal_attention_cached(
     }
 }
 
+/* ---- Phase 26: Flash Attention (Tiled Online Softmax) ---- */
+/* Same signature as causal_attention_cached but uses tiled KV access
+   with online softmax — O(1) extra memory per head instead of O(seq²).
+   Handles both prefill (step==0, seq_len tokens) and decode (step>0, 1 token).
+   GQA: pc.M = n_kv_heads, same mapping as causal_attention_cached.
+   Sliding window: pc.window_size > 0 limits attention span. */
+
+constant uint FA_TILE_KV = 32;
+
+kernel void flash_attention_tiled(
+        device const float* Q       [[buffer(0)]],
+        device const float* K_new   [[buffer(1)]],
+        device const float* V_new   [[buffer(2)]],
+        device float*       cache_k [[buffer(3)]],
+        device float*       cache_v [[buffer(4)]],
+        device float*       out     [[buffer(5)]],
+        constant PushConstants& pc  [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint head  = id.y;
+    uint q_pos = id.x;
+    uint dim   = pc.head_dim;
+    uint step  = pc.step_idx;
+    uint n_kv  = (pc.M > 0 && pc.M < pc.n_heads) ? pc.M : pc.n_heads;
+    uint kv_head = head * n_kv / pc.n_heads;
+
+    if (head >= pc.n_heads) return;
+
+    /* ---- Prefill mode (step == 0) ---- */
+    if (step == 0) {
+        if (q_pos >= pc.seq_len) return;
+
+        /* Copy K_new/V_new into cache (KV-head threads only) */
+        if (head < n_kv) {
+            for (uint d = 0; d < dim; ++d) {
+                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
+                cache_k[dst] = K_new[src];
+                cache_v[dst] = V_new[src];
+            }
+        }
+
+        /* Online softmax attention over cache[0..q_pos] */
+        float scale = rsqrt(float(dim));
+        float m = -1e30f;  /* running max */
+        float l = 0.0f;    /* running sum of exp */
+
+        /* Accumulator for output (dim floats) — stored in registers */
+        /* For head_dim up to 128, this fits in registers on Apple GPUs */
+        float acc[128];
+        for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+        /* Determine attention window */
+        uint kv_start = 0;
+        if (pc.window_size > 0 && q_pos >= pc.window_size)
+            kv_start = q_pos - pc.window_size + 1;
+
+        uint kv_end = q_pos;  /* inclusive, causal mask */
+
+        /* Tile over KV positions */
+        for (uint t_start = kv_start; t_start <= kv_end; t_start += FA_TILE_KV) {
+            uint t_end = min(t_start + FA_TILE_KV - 1, kv_end);
+
+            /* Compute scores for this tile */
+            float tile_max = -1e30f;
+            for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
+                float dot = 0.0f;
+                for (uint d = 0; d < dim; ++d)
+                    dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                         * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+                dot *= scale;
+                if (dot > tile_max) tile_max = dot;
+            }
+
+            /* Online softmax update */
+            float m_new = max(m, tile_max);
+            float correction = exp(m - m_new);
+
+            /* Rescale existing accumulator */
+            for (uint d = 0; d < dim; ++d)
+                acc[d] *= correction;
+            l *= correction;
+
+            /* Accumulate this tile */
+            for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
+                float dot = 0.0f;
+                for (uint d = 0; d < dim; ++d)
+                    dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                         * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+                float w = exp(dot * scale - m_new);
+                l += w;
+                for (uint d = 0; d < dim; ++d)
+                    acc[d] += w * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+            }
+            m = m_new;
+        }
+
+        /* Normalize and write output */
+        float inv_l = (l > 0.0f) ? (1.0f / l) : 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            out[head * pc.seq_len * dim + q_pos * dim + d] = acc[d] * inv_l;
+        return;
+    }
+
+    /* ---- Decode mode (step > 0): single-token ---- */
+    if (q_pos >= 1) return;
+    if (step >= pc.max_seq_len) return;
+
+    /* Append new K/V to cache */
+    if (head < n_kv) {
+        for (uint d = 0; d < dim; ++d) {
+            cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
+            cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+        }
+    }
+
+    /* Online softmax attention over cache[kv_start..step] */
+    float scale = rsqrt(float(dim));
+    float m_val = -1e30f;
+    float l_val = 0.0f;
+    float acc[128];
+    for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+    uint kv_start = 0;
+    if (pc.window_size > 0 && step >= pc.window_size)
+        kv_start = step - pc.window_size + 1;
+
+    for (uint t_start = kv_start; t_start <= step; t_start += FA_TILE_KV) {
+        uint t_end = min(t_start + FA_TILE_KV - 1, step);
+
+        float tile_max = -1e30f;
+        for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[head * dim + d]
+                     * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+            dot *= scale;
+            if (dot > tile_max) tile_max = dot;
+        }
+
+        float m_new = max(m_val, tile_max);
+        float correction = exp(m_val - m_new);
+        for (uint d = 0; d < dim; ++d)
+            acc[d] *= correction;
+        l_val *= correction;
+
+        for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[head * dim + d]
+                     * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+            float w = exp(dot * scale - m_new);
+            l_val += w;
+            for (uint d = 0; d < dim; ++d)
+                acc[d] += w * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+        }
+        m_val = m_new;
+    }
+
+    float inv_l = (l_val > 0.0f) ? (1.0f / l_val) : 0.0f;
+    for (uint d = 0; d < dim; ++d)
+        out[head * dim + d] = acc[d] * inv_l;
+}
+
 /* ---- Phase 17: Dequantization Kernels ---- */
 
 struct block_q4_0 {
@@ -394,6 +559,169 @@ kernel void dequant_q6_k(device const block_q6_k* blocks [[buffer(0)]],
     out[id] = scale * float(quant);
 }
 
+/* ---- Phase 25: K-Quant Dequantization Kernels ---- */
+
+/* Q4_1: 32-element blocks, 20 bytes (half d, half m, uchar qs[16]) */
+struct block_q4_1 { half d; half m; uchar qs[16]; };
+
+kernel void dequant_q4_1(device const block_q4_1* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 32;
+    uint elem_idx  = id % 32;
+    float d = float(blocks[block_idx].d);
+    float m = float(blocks[block_idx].m);
+    uchar byte_val = blocks[block_idx].qs[elem_idx % 16];
+    int nibble = (elem_idx < 16) ? (byte_val & 0xF) : (byte_val >> 4);
+    out[id] = d * float(nibble) + m;
+}
+
+/* Q5_0: 32-element blocks, 22 bytes (half d, uchar qh[4], uchar qs[16]) */
+struct block_q5_0 { half d; uchar qh[4]; uchar qs[16]; };
+
+kernel void dequant_q5_0(device const block_q5_0* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 32;
+    uint elem_idx  = id % 32;
+    float d = float(blocks[block_idx].d);
+    uchar byte_val = blocks[block_idx].qs[elem_idx % 16];
+    int nibble = (elem_idx < 16) ? (byte_val & 0xF) : (byte_val >> 4);
+    /* 5th bit from qh */
+    int bit = (blocks[block_idx].qh[elem_idx / 8] >> (elem_idx % 8)) & 1;
+    out[id] = d * float((nibble | (bit << 4)) - 16);
+}
+
+/* Q5_1: 32-element blocks, 24 bytes (half d, half m, uchar qh[4], uchar qs[16]) */
+struct block_q5_1 { half d; half m; uchar qh[4]; uchar qs[16]; };
+
+kernel void dequant_q5_1(device const block_q5_1* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 32;
+    uint elem_idx  = id % 32;
+    float d = float(blocks[block_idx].d);
+    float m = float(blocks[block_idx].m);
+    uchar byte_val = blocks[block_idx].qs[elem_idx % 16];
+    int nibble = (elem_idx < 16) ? (byte_val & 0xF) : (byte_val >> 4);
+    int bit = (blocks[block_idx].qh[elem_idx / 8] >> (elem_idx % 8)) & 1;
+    out[id] = d * float(nibble | (bit << 4)) + m;
+}
+
+/* Q2_K: 256-element blocks, 84 bytes */
+struct block_q2_k { uchar scales[16]; uchar qs[64]; half d; half dmin; };
+
+kernel void dequant_q2_k(device const block_q2_k* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 256;
+    uint elem_idx  = id % 256;
+    float super_d    = float(blocks[block_idx].d);
+    float super_dmin = float(blocks[block_idx].dmin);
+    /* 16 sub-blocks of 16 elements */
+    uint sub = elem_idx / 16;
+    uint sub_elem = elem_idx % 16;
+    uchar sc_byte = blocks[block_idx].scales[sub];
+    float sc  = float(sc_byte & 0xF) * super_d;
+    float mn  = float(sc_byte >> 4) * super_dmin;
+    /* 2-bit quants: 4 per byte */
+    uint qs_idx = elem_idx / 4;
+    uint qs_shift = (elem_idx % 4) * 2;
+    int q2 = (blocks[block_idx].qs[qs_idx] >> qs_shift) & 0x3;
+    out[id] = sc * float(q2) - mn;
+}
+
+/* Q3_K: 256-element blocks, 110 bytes */
+struct block_q3_k { uchar hmask[32]; uchar qs[64]; uchar scales[12]; half d; };
+
+kernel void dequant_q3_k(device const block_q3_k* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 256;
+    uint elem_idx  = id % 256;
+    float super_d = float(blocks[block_idx].d);
+
+    /* Decode 6-bit scale for this sub-block (16 sub-blocks of 16 elements) */
+    uint sub = elem_idx / 16;
+    int scale;
+    if (sub < 8) {
+        scale = int(blocks[block_idx].scales[sub] & 0xF)
+              | ((int(blocks[block_idx].scales[8 + sub / 2] >> (4 * (sub % 2))) & 0x3) << 4);
+    } else {
+        uint s2 = sub - 8;
+        scale = int(blocks[block_idx].scales[s2] >> 4)
+              | ((int(blocks[block_idx].scales[8 + s2 / 2] >> (4 * (s2 % 2) + 2)) & 0x3) << 4);
+    }
+    scale -= 32;
+
+    /* 3-bit quant: 2 low bits from qs, 1 high bit from hmask */
+    uint qs_idx = elem_idx / 4;
+    uint qs_shift = (elem_idx % 4) * 2;
+    int q_lo = (blocks[block_idx].qs[qs_idx] >> qs_shift) & 0x3;
+    int q_hi = (blocks[block_idx].hmask[elem_idx / 8] >> (elem_idx % 8)) & 1;
+    int q3 = q_lo | (q_hi << 2);
+    out[id] = super_d * float(scale) * float(q3 - 4);
+}
+
+/* Q4_K: 256-element blocks, 144 bytes */
+struct block_q4_k { half d; half dmin; uchar scales[12]; uchar qs[128]; };
+
+kernel void dequant_q4_k(device const block_q4_k* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 256;
+    uint elem_idx  = id % 256;
+    float super_d    = float(blocks[block_idx].d);
+    float super_dmin = float(blocks[block_idx].dmin);
+
+    /* 8 sub-blocks of 32 elements; 6-bit scale/min packed in 12 bytes */
+    uint sub = elem_idx / 32;
+    int sc, mn;
+    if (sub < 4) {
+        sc = int(blocks[block_idx].scales[sub] & 0x3F);
+        mn = int(blocks[block_idx].scales[sub + 4] & 0x3F);
+    } else {
+        uint s2 = sub - 4;
+        sc = int((blocks[block_idx].scales[s2]     >> 6) | ((blocks[block_idx].scales[s2 + 8] & 0x0F) << 2));
+        mn = int((blocks[block_idx].scales[s2 + 4] >> 6) | ((blocks[block_idx].scales[s2 + 8] >> 4)   << 2));
+    }
+
+    /* 4-bit quant from qs */
+    uint qs_idx = elem_idx / 2;
+    int nibble = (elem_idx & 1) ? (blocks[block_idx].qs[qs_idx] >> 4) : (blocks[block_idx].qs[qs_idx] & 0xF);
+    out[id] = super_d * float(sc) * float(nibble) - super_dmin * float(mn);
+}
+
+/* Q5_K: 256-element blocks, 176 bytes */
+struct block_q5_k { half d; half dmin; uchar scales[12]; uchar qs[128]; uchar qh[32]; };
+
+kernel void dequant_q5_k(device const block_q5_k* blocks [[buffer(0)]],
+                          device float* out              [[buffer(1)]],
+                          uint id [[thread_position_in_grid]]) {
+    uint block_idx = id / 256;
+    uint elem_idx  = id % 256;
+    float super_d    = float(blocks[block_idx].d);
+    float super_dmin = float(blocks[block_idx].dmin);
+
+    /* Same scale packing as Q4_K */
+    uint sub = elem_idx / 32;
+    int sc, mn;
+    if (sub < 4) {
+        sc = int(blocks[block_idx].scales[sub] & 0x3F);
+        mn = int(blocks[block_idx].scales[sub + 4] & 0x3F);
+    } else {
+        uint s2 = sub - 4;
+        sc = int((blocks[block_idx].scales[s2]     >> 6) | ((blocks[block_idx].scales[s2 + 8] & 0x0F) << 2));
+        mn = int((blocks[block_idx].scales[s2 + 4] >> 6) | ((blocks[block_idx].scales[s2 + 8] >> 4)   << 2));
+    }
+
+    /* 5-bit quant: 4 low bits from qs, 1 high bit from qh */
+    uint qs_idx = elem_idx / 2;
+    int nibble = (elem_idx & 1) ? (blocks[block_idx].qs[qs_idx] >> 4) : (blocks[block_idx].qs[qs_idx] & 0xF);
+    int bit = (blocks[block_idx].qh[elem_idx / 8] >> (elem_idx % 8)) & 1;
+    out[id] = super_d * float(sc) * float(nibble | (bit << 4)) - super_dmin * float(mn);
+}
+
 /* ---- Phase 17: Tiled MatMul (16x16 threadgroup tiles) ---- */
 
 constant uint TILE_SIZE = 16;
@@ -432,6 +760,71 @@ kernel void linear_tiled(device const float* A   [[buffer(0)]],
 
     if (row < pc.M && col < pc.N)
         C[row * pc.N + col] = acc;
+}
+
+/* ---- Phase 24: SIMD Group MatMul (8x8 simdgroup tiles) ---- */
+
+kernel void linear_simd(
+    device const float* A          [[buffer(0)]],
+    device const float* B          [[buffer(1)]],
+    device float*       C          [[buffer(2)]],
+    constant PushConstants& pc     [[buffer(15)]],
+    uint2 tgid  [[threadgroup_position_in_grid]],
+    uint  sgid  [[simdgroup_index_in_threadgroup]],
+    uint  lid   [[thread_index_in_simdgroup]])
+{
+    /* Each threadgroup handles a 32x32 output tile.
+       4x4 = 16 simdgroups, each computing an 8x8 sub-tile.
+       16 simdgroups × 32 threads = 512 threads per threadgroup. */
+    const uint sg_row = sgid / 4;
+    const uint sg_col = sgid % 4;
+
+    const uint row_base = tgid.y * 32 + sg_row * 8;
+    const uint col_base = tgid.x * 32 + sg_col * 8;
+
+    /* Early exit: entire 8x8 tile is out of bounds */
+    if (row_base >= pc.M && col_base >= pc.N) return;
+
+    simdgroup_float8x8 acc;
+    simdgroup_float8x8 tileA;
+    simdgroup_float8x8 tileB;
+
+    /* Zero accumulator */
+    acc = simdgroup_float8x8(0);
+
+    /* Accumulate K dimension in tiles of 8 */
+    for (uint k = 0; k < pc.K; k += 8) {
+        /* Load 8x8 from A[row_base:row_base+8, k:k+8] */
+        if (row_base + 8 <= pc.M && k + 8 <= pc.K) {
+            simdgroup_load(tileA, A + row_base * pc.K + k, pc.K);
+        } else {
+            /* Bounds-safe load: zero-pad out-of-range elements */
+            tileA = simdgroup_float8x8(0);
+            if (row_base < pc.M && k < pc.K)
+                simdgroup_load(tileA, A + row_base * pc.K + k, pc.K,
+                               ulong2(min(pc.K - k, 8u), min(pc.M - row_base, 8u)));
+        }
+
+        /* Load 8x8 from B[k:k+8, col_base:col_base+8] */
+        if (k + 8 <= pc.K && col_base + 8 <= pc.N) {
+            simdgroup_load(tileB, B + k * pc.N + col_base, pc.N);
+        } else {
+            tileB = simdgroup_float8x8(0);
+            if (k < pc.K && col_base < pc.N)
+                simdgroup_load(tileB, B + k * pc.N + col_base, pc.N,
+                               ulong2(min(pc.N - col_base, 8u), min(pc.K - k, 8u)));
+        }
+
+        simdgroup_multiply_accumulate(acc, tileA, tileB, acc);
+    }
+
+    /* Store 8x8 result to C[row_base:row_base+8, col_base:col_base+8] */
+    if (row_base + 8 <= pc.M && col_base + 8 <= pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N);
+    } else if (row_base < pc.M && col_base < pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N,
+                        ulong2(min(pc.N - col_base, 8u), min(pc.M - row_base, 8u)));
+    }
 }
 
 /* ---- Phase 18: Transformer Layer Primitives ---- */
@@ -642,6 +1035,17 @@ struct nf_provider_metal {
     id<MTLComputePipelineState> fn_embed_lookup = nil;
     id<MTLComputePipelineState> fn_argmax = nil;
     id<MTLComputePipelineState> fn_causal_attn_cached = nil;
+    id<MTLComputePipelineState> fn_linear_simd = nil;  /* Phase 24: simdgroup matmul */
+    bool has_simd_matmul = false;  /* GPU family supports simdgroup_matrix */
+    /* Phase 25: K-quant dequant PSOs */
+    id<MTLComputePipelineState> fn_dequant_q4_1 = nil;
+    id<MTLComputePipelineState> fn_dequant_q5_0 = nil;
+    id<MTLComputePipelineState> fn_dequant_q5_1 = nil;
+    id<MTLComputePipelineState> fn_dequant_q2_k = nil;
+    id<MTLComputePipelineState> fn_dequant_q3_k = nil;
+    id<MTLComputePipelineState> fn_dequant_q4_k = nil;
+    id<MTLComputePipelineState> fn_dequant_q5_k = nil;
+    id<MTLComputePipelineState> fn_flash_attn = nil;  /* Phase 26: tiled flash attention */
 };
 
 static nf_provider_metal s_instance;
@@ -659,10 +1063,10 @@ struct MetalDispatchTiming {
 static constexpr uint32_t kMaxTimings = 1024;
 static MetalDispatchTiming s_timings[kMaxTimings];
 static std::atomic<uint32_t> s_timing_head{0};
-static bool s_timing_enabled = false;
+static std::atomic<bool> s_timing_enabled{false};
 
 static void record_timing(id<MTLCommandBuffer> cb, const char* op) {
-    if (!s_timing_enabled) return;
+    if (!s_timing_enabled.load(std::memory_order_relaxed)) return;
     uint32_t idx = s_timing_head.fetch_add(1, std::memory_order_relaxed) % kMaxTimings;
     s_timings[idx].gpu_start_s = cb.GPUStartTime;
     s_timings[idx].gpu_end_s   = cb.GPUEndTime;
@@ -671,7 +1075,7 @@ static void record_timing(id<MTLCommandBuffer> cb, const char* op) {
 }
 
 extern "C" NF_API void nf_metal_enable_timing(bool enable) {
-    s_timing_enabled = enable;
+    s_timing_enabled.store(enable, std::memory_order_relaxed);
     if (enable) s_timing_head.store(0, std::memory_order_relaxed);
 }
 
@@ -749,11 +1153,30 @@ static nf_status metal_init(nf_provider self) {
         p->fn_argmax       = make_pso(@"argmax_rows");
         p->fn_causal_attn_cached = make_pso(@"causal_attention_cached");
 
+        /* Phase 24: SIMD group matmul — requires Apple GPU Family 7+ (M1 and later) */
+        if ([p->device supportsFamily:MTLGPUFamilyApple7]) {
+            p->fn_linear_simd = make_pso(@"linear_simd");
+            p->has_simd_matmul = (p->fn_linear_simd != nil);
+        }
+
+        /* Phase 25: K-quant dequant PSOs */
+        p->fn_dequant_q4_1 = make_pso(@"dequant_q4_1");
+        p->fn_dequant_q5_0 = make_pso(@"dequant_q5_0");
+        p->fn_dequant_q5_1 = make_pso(@"dequant_q5_1");
+        p->fn_dequant_q2_k = make_pso(@"dequant_q2_k");
+        p->fn_dequant_q3_k = make_pso(@"dequant_q3_k");
+        p->fn_dequant_q4_k = make_pso(@"dequant_q4_k");
+        p->fn_dequant_q5_k = make_pso(@"dequant_q5_k");
+        p->fn_flash_attn   = make_pso(@"flash_attention_tiled");
+
         if (!p->fn_vector_add || !p->fn_relu || !p->fn_attn_k || !p->fn_attn_v ||
             !p->fn_rms_norm || !p->fn_rope || !p->fn_rope_batch || !p->fn_linear || !p->fn_causal_attn ||
             !p->fn_dequant_q4_0 || !p->fn_dequant_q8_0 || !p->fn_dequant_q6_k || !p->fn_linear_tiled ||
             !p->fn_softmax || !p->fn_silu || !p->fn_elem_mul ||
-            !p->fn_embed_lookup || !p->fn_argmax || !p->fn_causal_attn_cached) {
+            !p->fn_embed_lookup || !p->fn_argmax || !p->fn_causal_attn_cached ||
+            !p->fn_dequant_q4_1 || !p->fn_dequant_q5_0 || !p->fn_dequant_q5_1 ||
+            !p->fn_dequant_q2_k || !p->fn_dequant_q3_k || !p->fn_dequant_q4_k || !p->fn_dequant_q5_k ||
+            !p->fn_flash_attn) {
             NSLog(@"[NF Metal] Pipeline state creation failed: %@", error);
             return NF_ERROR_INTERNAL;
         }
@@ -785,6 +1208,16 @@ static void metal_shutdown(nf_provider self) {
     p->fn_embed_lookup = nil;
     p->fn_argmax       = nil;
     p->fn_causal_attn_cached = nil;
+    p->fn_linear_simd = nil;
+    p->has_simd_matmul = false;
+    p->fn_dequant_q4_1 = nil;
+    p->fn_dequant_q5_0 = nil;
+    p->fn_dequant_q5_1 = nil;
+    p->fn_dequant_q2_k = nil;
+    p->fn_dequant_q3_k = nil;
+    p->fn_dequant_q4_k = nil;
+    p->fn_dequant_q5_k = nil;
+    p->fn_flash_attn = nil;
     p->library       = nil;
     p->queue         = nil;
     p->device        = nil;
@@ -1076,7 +1509,6 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
         @autoreleasepool {
             id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
             id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-            [enc setComputePipelineState:prov->fn_linear];
             [enc setBuffer:a_mb->mtl_buffer   offset:0 atIndex:0];
             [enc setBuffer:b_mb->mtl_buffer   offset:0 atIndex:1];
             [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:2];
@@ -1088,10 +1520,23 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
                 std::memcpy(&M, pc + 20, sizeof(uint32_t));
                 std::memcpy(&N, pc + 24, sizeof(uint32_t));
             }
-            [enc dispatchThreads:MTLSizeMake(N, M, 1)
-           threadsPerThreadgroup:MTLSizeMake(
-               MIN((NSUInteger)N, (NSUInteger)16),
-               MIN((NSUInteger)M, (NSUInteger)16), 1)];
+
+            if (prov->has_simd_matmul && M >= 8 && N >= 8) {
+                /* SIMD path: 32×32 output tiles, 16 simdgroups per threadgroup */
+                [enc setComputePipelineState:prov->fn_linear_simd];
+                NSUInteger tg_x = (N + 31) / 32;
+                NSUInteger tg_y = (M + 31) / 32;
+                [enc dispatchThreadgroups:MTLSizeMake(tg_x, tg_y, 1)
+                    threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
+            } else {
+                /* Fallback: tiled matmul (always faster than naive, has bounds checks) */
+                [enc setComputePipelineState:prov->fn_linear_tiled];
+                NSUInteger gridW = ((N + 15) / 16) * 16;
+                NSUInteger gridH = ((M + 15) / 16) * 16;
+                [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1)
+               threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            }
+
             [enc endEncoding];
             [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
                 out_mb->gpu_done.store(true, std::memory_order_release);
@@ -1221,6 +1666,44 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
         }
         return NF_OK;
     }
+
+    /* ---- Phase 25: K-quant dequant dispatches (all 1 input → 1 output) ---- */
+
+#define DISPATCH_DEQUANT(name_str, pso_field) \
+    if (std::strcmp(op_name, name_str) == 0 && n_in >= 1 && n_out >= 1) { \
+        auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]); \
+        auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]); \
+        out_mb->gpu_done.store(false, std::memory_order_release); \
+        @autoreleasepool { \
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer]; \
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder]; \
+            [enc setComputePipelineState:prov->pso_field]; \
+            [enc setBuffer:in_mb->mtl_buffer  offset:0 atIndex:0]; \
+            [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:1]; \
+            NSUInteger count = out_mb->desc.size_bytes / sizeof(float); \
+            NSUInteger tpg = prov->pso_field.maxTotalThreadsPerThreadgroup; \
+            if (tpg > count) tpg = count; \
+            [enc dispatchThreads:MTLSizeMake(count, 1, 1) \
+           threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)]; \
+            [enc endEncoding]; \
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name); \
+                out_mb->gpu_done.store(true, std::memory_order_release); \
+                out_mb->fence_cv.notify_all(); \
+            }]; \
+            [cmdBuf commit]; \
+        } \
+        return NF_OK; \
+    }
+
+    DISPATCH_DEQUANT("dequant_q4_1", fn_dequant_q4_1)
+    DISPATCH_DEQUANT("dequant_q5_0", fn_dequant_q5_0)
+    DISPATCH_DEQUANT("dequant_q5_1", fn_dequant_q5_1)
+    DISPATCH_DEQUANT("dequant_q2_k", fn_dequant_q2_k)
+    DISPATCH_DEQUANT("dequant_q3_k", fn_dequant_q3_k)
+    DISPATCH_DEQUANT("dequant_q4_k", fn_dequant_q4_k)
+    DISPATCH_DEQUANT("dequant_q5_k", fn_dequant_q5_k)
+
+#undef DISPATCH_DEQUANT
 
     /* ---- linear_tiled: 2 inputs → 1 output (16x16 tiled matmul) ---- */
     if (std::strcmp(op_name, "linear_tiled") == 0 && n_in >= 2 && n_out >= 1) {
@@ -1412,6 +1895,54 @@ static nf_status metal_dispatch(nf_provider self, const char* op_name,
 
             /* PushConstants layout (40B): seq_len(0) n_heads(4) head_dim(8)
                epsilon(12) theta(16) M(20) N(24) K(28) step_idx(32) max_seq_len(36) */
+            uint32_t seq_len = 1, n_heads = 1, step_idx = 0;
+            if (pc) {
+                std::memcpy(&seq_len,  pc,      sizeof(uint32_t));
+                std::memcpy(&n_heads,  pc + 4,  sizeof(uint32_t));
+                std::memcpy(&step_idx, pc + 32, sizeof(uint32_t));
+            }
+            uint32_t grid_x = (step_idx == 0) ? seq_len : 1;
+            [enc dispatchThreads:MTLSizeMake(grid_x, n_heads, 1)
+           threadsPerThreadgroup:MTLSizeMake(
+               MIN((NSUInteger)grid_x, (NSUInteger)16),
+               MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
+            [enc endEncoding];
+            [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) { record_timing(cb, op_name);
+                out_mb->gpu_done.store(true, std::memory_order_release);
+                out_mb->fence_cv.notify_all();
+            }];
+            [cmdBuf commit];
+        }
+        return NF_OK;
+    }
+
+    /* ---- Phase 26: flash_attention_cached: same signature, auto-selects tiled flash ---- */
+    if ((std::strcmp(op_name, "flash_attention_cached") == 0 ||
+         std::strcmp(op_name, "causal_attention_cached") == 0) && n_in >= 5 && n_out >= 1) {
+        /* This block handles both op names — "flash_attention_cached" always uses flash,
+           "causal_attention_cached" falls through from above only if not already handled.
+           Since causal_attention_cached is handled above, this only fires for flash_attention_cached. */
+        auto* q_mb       = reinterpret_cast<MetalBuffer*>(inputs[0]);
+        auto* k_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+        auto* v_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[2]);
+        auto* cache_k_mb = reinterpret_cast<MetalBuffer*>(inputs[3]);
+        auto* cache_v_mb = reinterpret_cast<MetalBuffer*>(inputs[4]);
+        auto* out_mb     = reinterpret_cast<MetalBuffer*>(outputs[0]);
+        const uint8_t* pc = get_push_constants();
+
+        out_mb->gpu_done.store(false, std::memory_order_release);
+        @autoreleasepool {
+            id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            [enc setComputePipelineState:prov->fn_flash_attn];
+            [enc setBuffer:q_mb->mtl_buffer       offset:0 atIndex:0];
+            [enc setBuffer:k_new_mb->mtl_buffer   offset:0 atIndex:1];
+            [enc setBuffer:v_new_mb->mtl_buffer   offset:0 atIndex:2];
+            [enc setBuffer:cache_k_mb->mtl_buffer offset:0 atIndex:3];
+            [enc setBuffer:cache_v_mb->mtl_buffer offset:0 atIndex:4];
+            [enc setBuffer:out_mb->mtl_buffer     offset:0 atIndex:5];
+            if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+
             uint32_t seq_len = 1, n_heads = 1, step_idx = 0;
             if (pc) {
                 std::memcpy(&seq_len,  pc,      sizeof(uint32_t));

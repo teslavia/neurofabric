@@ -113,8 +113,12 @@ static bool send_all(socket_t s, const void* data, size_t len) {
     const auto* p = static_cast<const uint8_t*>(data);
     size_t sent = 0;
     while (sent < len) {
+        int flags = 0;
+#ifdef __linux__
+        flags = MSG_NOSIGNAL;
+#endif
         auto n = ::send(s, reinterpret_cast<const char*>(p + sent),
-                        static_cast<int>(len - sent), 0);
+                        static_cast<int>(len - sent), flags);
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }
