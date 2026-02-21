@@ -529,6 +529,22 @@ public:
             return NF_OK;
         }
 
+        /**
+         * Inject push constants by node ID (not name).
+         * Required when multiple nodes share the same op_name.
+         */
+        nf_status set_push_constants_by_id(uint32_t node_id,
+                                           const void* data, uint32_t size) {
+            if (!data || size > NF_MAX_PUSH_CONSTANTS)
+                return NF_ERROR_INVALID_ARG;
+            if (!nodes_ || node_id >= nodes_->size())
+                return NF_ERROR_NOT_FOUND;
+            auto& desc = (*nodes_)[node_id]->desc;
+            std::memcpy(desc.push_constants, data, size);
+            desc.push_constants_size = size;
+            return NF_OK;
+        }
+
     private:
         void dispatch_step(
             uint32_t tid,
