@@ -3,9 +3,10 @@
  * @brief End-to-end text generation CLI
  *
  * Phase 24: Tokenizer Integration & MatMul Optimization.
+ * Phase 31: Multi-Architecture support (--arch flag, auto-detection).
  *
  * Usage: nf_generate <gguf_path> "prompt text" [--max-tokens N] [--temperature T]
- *                    [--top-k K] [--top-p P] [--seed S]
+ *                    [--top-k K] [--top-p P] [--seed S] [--fp16] [--arch NAME]
  */
 
 #include "neurofabric/neuro_fabric_abi.h"
@@ -13,6 +14,7 @@
 #include "neurofabric/PipelineEngine.hpp"
 #include "gguf_loader.hpp"
 #include "llama_dag_builder.hpp"
+#include "arch_registry.hpp"
 #include "sampler.hpp"
 #include "tokenizer.hpp"
 
@@ -36,7 +38,9 @@ static void usage(const char* prog) {
         "  --top-k K        (default: 40)\n"
         "  --top-p P        (default: 0.95)\n"
         "  --seed S         (default: random)\n"
-        "  --fp16           use FP16 inference\n",
+        "  --fp16           use FP16 inference\n"
+        "  --paged          use paged KV cache\n"
+        "  --arch NAME      override architecture (llama/mistral/phi3)\n",
         prog);
 }
 
@@ -57,6 +61,8 @@ int main(int argc, char** argv) {
     sp.seed = 0;
     bool has_seed = false;
     bool use_fp16 = false;
+    bool use_paged = false;
+    const char* arch_override = nullptr;
 
     /* Check NF_FP16 env var */
     const char* fp16_env = std::getenv("NF_FP16");
@@ -77,6 +83,10 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(argv[i], "--fp16") == 0)
             use_fp16 = true;
+        else if (std::strcmp(argv[i], "--paged") == 0)
+            use_paged = true;
+        else if (std::strcmp(argv[i], "--arch") == 0 && i + 1 < argc)
+            arch_override = argv[++i];
     }
     if (!has_seed) sp.seed = static_cast<uint32_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
@@ -85,6 +95,14 @@ int main(int argc, char** argv) {
     /* Load model */
     auto* model = nf::gguf_open(gguf_path);
     if (!model) { std::fprintf(stderr, "Failed to open GGUF: %s\n", gguf_path); return 1; }
+
+    /* Phase 31: override architecture if requested */
+    if (arch_override) model->architecture = arch_override;
+
+    /* Register all known architectures */
+    nf::nf_register_llama();
+    nf::nf_register_mistral();
+    nf::nf_register_phi3();
 
     /* Init tokenizer */
     nf::Tokenizer tokenizer(*model);
@@ -109,14 +127,31 @@ int main(int argc, char** argv) {
     auto prompt_ids = tokenizer.encode(prompt);
     uint32_t prefill_seq = static_cast<uint32_t>(prompt_ids.size());
 
-    std::fprintf(stderr, "[nf_generate] model: %u layers, %u dim, vocab %u\n",
-                 model->n_layers, model->dim, model->vocab_size);
+    std::fprintf(stderr, "[nf_generate] model: %u layers, %u dim, vocab %u, arch %s\n",
+                 model->n_layers, model->dim, model->vocab_size,
+                 model->architecture.empty() ? "llama" : model->architecture.c_str());
     std::fprintf(stderr, "[nf_generate] prompt: %u tokens, generating %u tokens\n",
                  prefill_seq, max_tokens);
 
     /* Create context */
     auto t0 = std::chrono::steady_clock::now();
-    auto ctx = nf::create_llama_context(engine, *model, prov, vt, mem_vt, max_seq, prefill_seq, use_fp16);
+    nf::LlamaContextPtr ctx(nullptr, nf::release_llama_context);
+    if (use_paged) {
+        nf::ModelConfig cfg{};
+        cfg.engine = &engine;
+        cfg.prov = prov;
+        cfg.vt = &vt;
+        cfg.mem_vt = &mem_vt;
+        cfg.model = model;
+        cfg.max_seq = max_seq;
+        cfg.max_prefill_seq = prefill_seq;
+        cfg.use_fp16 = use_fp16;
+        cfg.use_paged_kv = true;
+        cfg.arch_override = arch_override;
+        ctx = nf::create_llama_context(cfg);
+    } else {
+        ctx = nf::create_llama_context(engine, *model, prov, vt, mem_vt, max_seq, prefill_seq, use_fp16);
+    }
     if (!ctx) { std::fprintf(stderr, "Context creation failed\n"); return 1; }
     auto t_ctx = std::chrono::steady_clock::now();
 

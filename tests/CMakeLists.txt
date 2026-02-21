@@ -136,6 +136,49 @@ target_include_directories(nf_pso_registry_test PRIVATE
 )
 add_test(NAME pso_registry COMMAND nf_pso_registry_test)
 
+# ---- Phase 31: KV cache policy test (platform-independent) ----
+add_executable(nf_kv_cache_policy_test kv_cache_policy_test.cpp)
+target_include_directories(nf_kv_cache_policy_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tools
+)
+add_test(NAME kv_cache_policy COMMAND nf_kv_cache_policy_test)
+
+# ---- Phase 32: ModelConfig + BlockAllocator test (platform-independent) ----
+add_executable(nf_model_config_test model_config_test.cpp)
+target_include_directories(nf_model_config_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_model_config_test PRIVATE nf_core)
+add_test(NAME model_config COMMAND nf_model_config_test)
+
+# ---- Phase 32: PagedKVCache test (platform-independent) ----
+add_executable(nf_paged_kv_test paged_kv_test.cpp)
+target_include_directories(nf_paged_kv_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_paged_kv_test PRIVATE nf_core)
+add_test(NAME paged_kv COMMAND nf_paged_kv_test)
+
+# ---- Phase 32: Batch scheduler test (platform-independent) ----
+add_executable(nf_batch_scheduler_test batch_scheduler_test.cpp)
+target_include_directories(nf_batch_scheduler_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_batch_scheduler_test PRIVATE nf_core)
+add_test(NAME batch_scheduler COMMAND nf_batch_scheduler_test)
+
+# ---- Phase 32: Speculative decoding test (platform-independent) ----
+add_executable(nf_speculative_decode_test speculative_decode_test.cpp)
+target_include_directories(nf_speculative_decode_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/tools
+)
+target_link_libraries(nf_speculative_decode_test PRIVATE nf_core)
+add_test(NAME speculative_decode COMMAND nf_speculative_decode_test)
+
 # ---- Chrome trace export test (platform-independent, mocks Metal timing) ----
 add_executable(nf_chrome_trace_test chrome_trace_test.cpp)
 target_include_directories(nf_chrome_trace_test PRIVATE
@@ -146,6 +189,24 @@ target_link_libraries(nf_chrome_trace_test PRIVATE nf_core)
 add_test(NAME chrome_trace COMMAND nf_chrome_trace_test)
 
 if(NF_PLUGIN_METAL)
+    # Phase 31: Mistral architecture test
+    add_executable(nf_mistral_arch_test mistral_arch_test.cpp)
+    target_link_libraries(nf_mistral_arch_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_mistral_arch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    add_test(NAME mistral_arch COMMAND nf_mistral_arch_test)
+
+    # Phase 31: Phi-3 architecture test
+    add_executable(nf_phi3_arch_test phi3_arch_test.cpp)
+    target_link_libraries(nf_phi3_arch_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_phi3_arch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/tools
+    )
+    add_test(NAME phi3_arch COMMAND nf_phi3_arch_test)
+
     add_executable(nf_silicon_test silicon_test.cpp)
     target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)
     target_include_directories(nf_silicon_test PRIVATE
@@ -251,6 +312,14 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/tools
     )
     add_test(NAME fused_warmup COMMAND nf_fused_warmup_test)
+
+    # Phase 32: Paged attention kernel test
+    add_executable(nf_paged_attn_test paged_attn_test.cpp)
+    target_link_libraries(nf_paged_attn_test PRIVATE nf_core nf_plugin_metal)
+    target_include_directories(nf_paged_attn_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+    )
+    add_test(NAME paged_attn COMMAND nf_paged_attn_test)
 endif()
 
 if(NF_PLUGIN_RKNN)

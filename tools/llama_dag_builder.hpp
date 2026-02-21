@@ -3,10 +3,14 @@
  * @brief Header-only LLaMA DAG builder from GGUF metadata
  *
  * Phase 21: Real-Model GGUF→DAG End-to-End Inference.
+ * Phase 31: Multi-Architecture DAG & KV Cache Intelligence.
  *
  * Takes a GGUFModel* + Metal provider vtables, builds the full N-layer
  * Transformer DAG with dequant + RoPE nodes. All weights are memcpy'd
  * from mmap into Metal unified buffers (one-time cost).
+ *
+ * Phase 31: Uses arch_registry resolve helpers for op name selection
+ * and integrates kv_cache_policy for eviction/quantization.
  */
 
 #ifndef NF_LLAMA_DAG_BUILDER_HPP
@@ -14,6 +18,9 @@
 
 #include "gguf_loader.hpp"
 #include "quant_registry.hpp"
+#include "arch_registry.hpp"
+#include "kv_cache_policy.hpp"
+#include "model_config.hpp"
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
 #include "neurofabric/neuro_scheduler_abi.h"
@@ -709,6 +716,14 @@ struct LlamaContext {
     float rope_theta, rms_norm_eps;
     uint32_t sliding_window = 0;  /* 0 = full causal, >0 = sliding (Mistral) */
     bool use_fp16 = false;  /* Phase 27: F16 activations + weights */
+    bool use_paged_kv = false;  /* Phase 32: paged KV cache */
+
+    /* Phase 31: KV cache policy + architecture strategy */
+    nf_kv_cache_policy kv_policy{};
+    const nf_arch_strategy* arch = nullptr;  /* resolved from registry, not owned */
+
+    /* Phase 32: paged KV cache (nullptr when use_paged_kv=false) */
+    std::unique_ptr<PagedKVCache> paged_kv;
 
     /* Pre-dequantized F32 weight buffers (computed once via warmup DAG) */
     struct LayerF32Weights {
@@ -737,8 +752,13 @@ struct LlamaContext {
     std::vector<LayerNormWeights> norm_weights;
     BufPair final_norm_weight;
 
-    /* KV cache: n_layers × 2 (K, V) */
+    /* KV cache: n_layers × 2 (K, V) — contiguous (legacy) */
     std::vector<BufPair> kv_cache;
+
+    /* Phase 32: Paged KV pool buffers (per-layer K and V pools + block table) */
+    std::vector<BufPair> kv_pool_k;   /* [n_layers] */
+    std::vector<BufPair> kv_pool_v;   /* [n_layers] */
+    BufPair block_table_buf{};        /* GPU-side block table */
 
     /* Shared activation buffers (sized for max_prefill_seq) */
     std::vector<BufPair> hidden_bufs;
@@ -772,7 +792,8 @@ inline LlamaContextPtr create_llama_context(
     nf_provider_mem_vtable& mem_vt,
     uint32_t max_seq,
     uint32_t max_prefill_seq,
-    bool use_fp16 = false)
+    bool use_fp16 = false,
+    const nf_kv_cache_config* kv_cfg = nullptr)
 {
     auto fail = [](){ return LlamaContextPtr(nullptr, release_llama_context); };
     LlamaContextPtr ctx(new LlamaContext, release_llama_context);
@@ -793,6 +814,27 @@ inline LlamaContextPtr create_llama_context(
     ctx->rms_norm_eps = model.rms_norm_eps;
     ctx->sliding_window = model.sliding_window;
     ctx->use_fp16 = use_fp16;
+
+    /* Phase 31: resolve architecture strategy from registry */
+    const char* arch_name = model.architecture.empty() ? "llama" : model.architecture.c_str();
+    ctx->arch = nf_find_arch(arch_name);
+
+    /* Phase 31: initialize KV cache policy */
+    if (kv_cfg) {
+        ctx->kv_policy = nf_create_kv_policy(*kv_cfg);
+    } else if (model.sliding_window > 0) {
+        /* Auto-configure sliding window from GGUF metadata */
+        nf_kv_cache_config auto_cfg{};
+        auto_cfg.eviction = NF_KV_EVICT_SLIDING;
+        auto_cfg.window_size = model.sliding_window;
+        auto_cfg.max_seq_len = max_seq;
+        ctx->kv_policy = nf_create_kv_policy(auto_cfg);
+    } else {
+        nf_kv_cache_config none_cfg{};
+        none_cfg.eviction = NF_KV_EVICT_NONE;
+        none_cfg.max_seq_len = max_seq;
+        ctx->kv_policy = nf_create_kv_policy(none_cfg);
+    }
 
     const uint32_t D = ctx->dim;
     const uint32_t HD = ctx->head_dim;
@@ -1111,6 +1153,208 @@ inline LlamaContextPtr create_llama_context(
 /* PLACEHOLDER_BUILD_STEP */
 
 /**
+ * Phase 32: ModelConfig-based context creation.
+ * Delegates to the 9-param overload, adding paged KV setup when requested.
+ */
+inline LlamaContextPtr create_llama_context(const ModelConfig& cfg)
+{
+    uint32_t prefill = cfg.max_prefill_seq ? cfg.max_prefill_seq : cfg.max_seq;
+    auto ctx = create_llama_context(
+        *cfg.engine, *cfg.model, cfg.prov, *cfg.vt, *cfg.mem_vt,
+        cfg.max_seq, prefill, cfg.use_fp16, cfg.kv_cfg);
+
+    if (ctx && cfg.use_paged_kv) {
+        /* Calculate number of blocks if auto */
+        uint32_t n_blocks = cfg.num_kv_blocks;
+        if (n_blocks == 0) {
+            uint32_t blocks_per_seq = (cfg.max_seq + cfg.kv_block_size - 1)
+                                      / cfg.kv_block_size;
+            n_blocks = (uint32_t)(blocks_per_seq * ctx->n_layers * 1.2f);
+            if (n_blocks < 64) n_blocks = 64;
+        }
+        ctx->paged_kv = std::make_unique<PagedKVCache>();
+        ctx->paged_kv->init(n_blocks, cfg.kv_block_size,
+                            ctx->n_layers, ctx->n_kv_heads, ctx->head_dim);
+        ctx->use_paged_kv = true;
+
+        /* Allocate per-layer K/V pool GPU buffers */
+        nf_dtype act_dt = cfg.use_fp16 ? NF_DTYPE_F16 : NF_DTYPE_F32;
+        size_t elem_sz = cfg.use_fp16 ? sizeof(uint16_t) : sizeof(float);
+        size_t pool_size = (size_t)n_blocks * ctx->n_kv_heads
+                         * cfg.kv_block_size * ctx->head_dim * elem_sz;
+        ctx->kv_pool_k.resize(ctx->n_layers);
+        ctx->kv_pool_v.resize(ctx->n_layers);
+        for (uint32_t l = 0; l < ctx->n_layers; ++l) {
+            ctx->kv_pool_k[l] = llama_alloc_buf(cfg.prov, *cfg.mem_vt, act_dt, pool_size);
+            ctx->kv_pool_v[l] = llama_alloc_buf(cfg.prov, *cfg.mem_vt, act_dt, pool_size);
+            /* Zero-init pools */
+            void* p;
+            ctx->kv_pool_k[l].ops.map(ctx->kv_pool_k[l].buf, &p);
+            std::memset(p, 0, pool_size); ctx->kv_pool_k[l].ops.unmap(ctx->kv_pool_k[l].buf);
+            ctx->kv_pool_v[l].ops.map(ctx->kv_pool_v[l].buf, &p);
+            std::memset(p, 0, pool_size); ctx->kv_pool_v[l].ops.unmap(ctx->kv_pool_v[l].buf);
+        }
+
+        /* Block table GPU buffer: max_blocks_per_seq uint32s */
+        uint32_t max_bt = NF_PAGED_MAX_BLOCKS_PER_SEQ;
+        ctx->block_table_buf = llama_alloc_buf(cfg.prov, *cfg.mem_vt, NF_DTYPE_I32,
+                                                max_bt * sizeof(uint32_t));
+
+        std::printf("[llama_ctx] paged KV: %u blocks × %u tokens, pool %.1f MB/layer\n",
+                    n_blocks, cfg.kv_block_size, pool_size / (1024.0 * 1024.0));
+    }
+
+    return ctx;
+}
+
+/* PLACEHOLDER_BUILD_STEP_2 */
+
+/**
+ * Phase 32 Step 4: Build a draft graph using only the first N layers.
+ * Used for self-speculative decoding — draft model = first N layers of full model.
+ * Returns a StepGraph with only draft_layers layers (no final norm/LM head).
+ */
+inline StepGraph build_speculative_draft_graph(
+    LlamaContext& ctx, uint32_t seq_len, uint32_t draft_layers)
+{
+    PipelineEngine& engine = *ctx.engine;
+    StepGraph sg{};
+    sg.gid = engine.create_graph();
+    uint32_t gid = sg.gid;
+
+    const char* norm_op = nf_resolve_norm_op(ctx.arch);
+    const char* rope_op = nf_resolve_rope_op(ctx.arch, ctx.use_fp16);
+    const char* attn_op = ctx.use_paged_kv
+        ? nf_resolve_paged_attn_op(ctx.arch)
+        : nf_resolve_attn_op(ctx.arch);
+    const char* ffn_act_op = nf_resolve_ffn_op(ctx.arch);
+
+    uint32_t NL = draft_layers;
+    if (NL > ctx.n_layers) NL = ctx.n_layers;
+
+    (void)seq_len;
+
+    /* Embedding */
+    { BufPair ins[] = {ctx.embed_f32, ctx.token_buf};
+      sg.embed_id = add_node(engine, gid, "embedding_lookup",
+                              ins, 2, &ctx.hidden_bufs[0], 1); }
+
+    uint32_t prev_last = sg.embed_id;
+    sg.layer_ids.resize(NL);
+
+    for (uint32_t l = 0; l < NL; ++l) {
+        auto& lid = sg.layer_ids[l];
+        auto& lf = ctx.layer_f32[l];
+        auto& lq = ctx.layer_quant[l];
+        auto& nw = ctx.norm_weights[l];
+
+        lid.dq_q = lid.dq_k = lid.dq_v = lid.dq_o = UINT32_MAX;
+        lid.dq_gate = lid.dq_up = lid.dq_down = UINT32_MAX;
+
+        { BufPair ins[] = {ctx.hidden_bufs[l], nw.attn_norm};
+          lid.attn_norm = add_node(engine, gid, norm_op, ins, 2,
+                                   &ctx.normed, 1); }
+        engine.add_edge(gid, prev_last, lid.attn_norm);
+
+        auto fused_or_linear = [&](BufPair& activation, BufPair& f32_weight,
+                                    BufPair& quant_weight, nf_dtype quant_dt,
+                                    BufPair& output) -> uint32_t {
+            const char* fused_op = nf_fused_linear_op_name(quant_dt, ctx.use_fp16);
+            if (fused_op && quant_weight.buf) {
+                BufPair ins[] = {activation, quant_weight};
+                return add_node(engine, gid, fused_op, ins, 2, &output, 1);
+            } else {
+                BufPair ins[] = {activation, f32_weight};
+                return add_node(engine, gid, "linear", ins, 2, &output, 1);
+            }
+        };
+
+        lid.q_lin = fused_or_linear(ctx.normed, lf.q, lq.q, lq.q_dt, ctx.q_buf);
+        lid.k_lin = fused_or_linear(ctx.normed, lf.k, lq.k, lq.k_dt, ctx.k_buf);
+        lid.v_lin = fused_or_linear(ctx.normed, lf.v, lq.v, lq.v_dt, ctx.v_buf);
+        engine.add_edge(gid, lid.attn_norm, lid.q_lin);
+        engine.add_edge(gid, lid.attn_norm, lid.k_lin);
+        engine.add_edge(gid, lid.attn_norm, lid.v_lin);
+
+        { BufPair ins[] = {ctx.q_buf};
+          lid.q_rope = add_node(engine, gid, rope_op, ins, 1, &ctx.q_rope_buf, 1); }
+        { BufPair ins[] = {ctx.k_buf};
+          lid.k_rope = add_node(engine, gid, rope_op, ins, 1, &ctx.k_rope_buf, 1); }
+        engine.add_edge(gid, lid.q_lin, lid.q_rope);
+        engine.add_edge(gid, lid.k_lin, lid.k_rope);
+
+        if (ctx.use_paged_kv) {
+            BufPair ins[] = {ctx.q_rope_buf, ctx.kv_pool_k[l], ctx.kv_pool_v[l],
+                             ctx.block_table_buf};
+            lid.cached_attn = add_node(engine, gid, attn_op, ins, 4, &ctx.attn_out, 1);
+        } else {
+            BufPair ins[] = {ctx.q_rope_buf, ctx.k_rope_buf, ctx.v_buf,
+                             ctx.kv_cache[l*2], ctx.kv_cache[l*2+1]};
+            lid.cached_attn = add_node(engine, gid, attn_op, ins, 5, &ctx.attn_out, 1);
+        }
+        engine.add_edge(gid, lid.q_rope, lid.cached_attn);
+        engine.add_edge(gid, lid.k_rope, lid.cached_attn);
+        engine.add_edge(gid, lid.v_lin, lid.cached_attn);
+
+        lid.o_lin = fused_or_linear(ctx.attn_out, lf.o, lq.o, lq.o_dt, ctx.proj_out);
+        engine.add_edge(gid, lid.cached_attn, lid.o_lin);
+
+        { BufPair ins[] = {ctx.hidden_bufs[l], ctx.proj_out};
+          lid.resid_add1 = add_node(engine, gid, "metal_vector_add", ins, 2,
+                                    &ctx.resid1, 1); }
+        engine.add_edge(gid, lid.o_lin, lid.resid_add1);
+        engine.add_edge(gid, prev_last, lid.resid_add1);
+
+        { BufPair ins[] = {ctx.resid1, nw.ffn_norm};
+          lid.ffn_norm = add_node(engine, gid, norm_op, ins, 2, &ctx.normed2, 1); }
+        engine.add_edge(gid, lid.resid_add1, lid.ffn_norm);
+
+        lid.gate_lin = fused_or_linear(ctx.normed2, lf.gate, lq.gate, lq.gate_dt, ctx.gate_out);
+        lid.up_lin   = fused_or_linear(ctx.normed2, lf.up,   lq.up,   lq.up_dt,   ctx.up_out);
+        engine.add_edge(gid, lid.ffn_norm, lid.gate_lin);
+        engine.add_edge(gid, lid.ffn_norm, lid.up_lin);
+
+        { BufPair ins[] = {ctx.gate_out};
+          lid.silu_node = add_node(engine, gid, ffn_act_op, ins, 1, &ctx.silu_out, 1); }
+        engine.add_edge(gid, lid.gate_lin, lid.silu_node);
+
+        { BufPair ins[] = {ctx.silu_out, ctx.up_out};
+          lid.elem_mul = add_node(engine, gid, "elementwise_mul", ins, 2, &ctx.mul_out, 1); }
+        engine.add_edge(gid, lid.silu_node, lid.elem_mul);
+        engine.add_edge(gid, lid.up_lin, lid.elem_mul);
+
+        lid.down_lin = fused_or_linear(ctx.mul_out, lf.down, lq.down, lq.down_dt, ctx.down_out);
+        engine.add_edge(gid, lid.elem_mul, lid.down_lin);
+
+        { BufPair ins[] = {ctx.resid1, ctx.down_out};
+          lid.resid_add2 = add_node(engine, gid, "metal_vector_add", ins, 2,
+                                    &ctx.hidden_bufs[l+1], 1); }
+        engine.add_edge(gid, lid.down_lin, lid.resid_add2);
+        engine.add_edge(gid, lid.resid_add1, lid.resid_add2);
+
+        prev_last = lid.resid_add2;
+    }
+
+    /* Draft graph: add final norm + LM head + argmax using output of last draft layer */
+    { BufPair ins[] = {ctx.hidden_bufs[NL], ctx.final_norm_weight};
+      sg.final_norm_id = add_node(engine, gid, norm_op, ins, 2,
+                                   &ctx.final_normed, 1); }
+    engine.add_edge(gid, prev_last, sg.final_norm_id);
+
+    { BufPair ins[] = {ctx.final_normed, ctx.lm_head_f32};
+      sg.lm_head_id = add_node(engine, gid, "linear", ins, 2,
+                                &ctx.logits, 1); }
+    engine.add_edge(gid, sg.final_norm_id, sg.lm_head_id);
+
+    { BufPair ins[] = {ctx.logits};
+      sg.argmax_id = add_node(engine, gid, "argmax", ins, 1,
+                               &ctx.argmax_out, 1); }
+    engine.add_edge(gid, sg.lm_head_id, sg.argmax_id);
+
+    return sg;
+}
+
+/**
  * Build a lightweight per-step graph using persistent F32 weights from ctx.
  * No weight loading, no dequant nodes. ~175 nodes vs ~330 with dequant.
  */
@@ -1130,6 +1374,14 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
     const uint32_t NL = ctx.n_layers;
 
     (void)seq_len; /* sizes come from push constants, buffers pre-allocated */
+
+    /* Phase 31: resolve op names from architecture strategy */
+    const char* norm_op = nf_resolve_norm_op(ctx.arch);
+    const char* rope_op = nf_resolve_rope_op(ctx.arch, ctx.use_fp16);
+    const char* attn_op = ctx.use_paged_kv
+        ? nf_resolve_paged_attn_op(ctx.arch)
+        : nf_resolve_attn_op(ctx.arch);
+    const char* ffn_act_op = nf_resolve_ffn_op(ctx.arch);
 
     /* Embedding: embed_f32 + token_buf → hidden[0] */
     { BufPair ins[] = {ctx.embed_f32, ctx.token_buf};
@@ -1151,7 +1403,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
 
         /* attn_norm: hidden[l] → normed */
         { BufPair ins[] = {ctx.hidden_bufs[l], nw.attn_norm};
-          lid.attn_norm = add_node(engine, gid, "rms_norm", ins, 2,
+          lid.attn_norm = add_node(engine, gid, norm_op, ins, 2,
                                    &ctx.normed, 1); }
         engine.add_edge(gid, prev_last, lid.attn_norm);
 
@@ -1181,19 +1433,28 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
 
         /* RoPE on Q and K */
         { BufPair ins[] = {ctx.q_buf};
-          lid.q_rope = add_node(engine, gid, "rope_batch", ins, 1,
+          lid.q_rope = add_node(engine, gid, rope_op, ins, 1,
                                 &ctx.q_rope_buf, 1); }
         { BufPair ins[] = {ctx.k_buf};
-          lid.k_rope = add_node(engine, gid, "rope_batch", ins, 1,
+          lid.k_rope = add_node(engine, gid, rope_op, ins, 1,
                                 &ctx.k_rope_buf, 1); }
         engine.add_edge(gid, lid.q_lin, lid.q_rope);
         engine.add_edge(gid, lid.k_lin, lid.k_rope);
 
-        /* causal_attention_cached */
-        { BufPair ins[] = {ctx.q_rope_buf, ctx.k_rope_buf, ctx.v_buf,
-                           ctx.kv_cache[l*2], ctx.kv_cache[l*2+1]};
-          lid.cached_attn = add_node(engine, gid, "flash_attention_cached",
-                                     ins, 5, &ctx.attn_out, 1); }
+        /* causal_attention_cached or flash_attention_paged */
+        if (ctx.use_paged_kv) {
+            /* Paged path: Q, K_pool, V_pool, block_table → attn_out */
+            BufPair ins[] = {ctx.q_rope_buf, ctx.kv_pool_k[l], ctx.kv_pool_v[l],
+                             ctx.block_table_buf};
+            lid.cached_attn = add_node(engine, gid, attn_op,
+                                       ins, 4, &ctx.attn_out, 1);
+        } else {
+            /* Legacy contiguous path */
+            BufPair ins[] = {ctx.q_rope_buf, ctx.k_rope_buf, ctx.v_buf,
+                             ctx.kv_cache[l*2], ctx.kv_cache[l*2+1]};
+            lid.cached_attn = add_node(engine, gid, attn_op,
+                                       ins, 5, &ctx.attn_out, 1);
+        }
         engine.add_edge(gid, lid.q_rope, lid.cached_attn);
         engine.add_edge(gid, lid.k_rope, lid.cached_attn);
         engine.add_edge(gid, lid.v_lin, lid.cached_attn);
@@ -1211,7 +1472,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
 
         /* FFN norm: resid1 → normed2 */
         { BufPair ins[] = {ctx.resid1, nw.ffn_norm};
-          lid.ffn_norm = add_node(engine, gid, "rms_norm", ins, 2,
+          lid.ffn_norm = add_node(engine, gid, norm_op, ins, 2,
                                   &ctx.normed2, 1); }
         engine.add_edge(gid, lid.resid_add1, lid.ffn_norm);
 
@@ -1223,7 +1484,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
 
         /* SiLU on gate output */
         { BufPair ins[] = {ctx.gate_out};
-          lid.silu_node = add_node(engine, gid, "silu", ins, 1,
+          lid.silu_node = add_node(engine, gid, ffn_act_op, ins, 1,
                                    &ctx.silu_out, 1); }
         engine.add_edge(gid, lid.gate_lin, lid.silu_node);
 
@@ -1252,7 +1513,7 @@ inline StepGraph build_llama_step_graph(LlamaContext& ctx, uint32_t seq_len)
 
     /* Final norm: hidden[NL] → final_normed */
     { BufPair ins[] = {ctx.hidden_bufs[NL], ctx.final_norm_weight};
-      sg.final_norm_id = add_node(engine, gid, "rms_norm", ins, 2,
+      sg.final_norm_id = add_node(engine, gid, norm_op, ins, 2,
                                    &ctx.final_normed, 1); }
     engine.add_edge(gid, prev_last, sg.final_norm_id);
 
@@ -1327,7 +1588,15 @@ inline void inject_step_push_constants(
         { PushConstants apc{};
           apc.seq_len = seq_len; apc.n_heads = NH; apc.head_dim = HD;
           apc.M = NKV; apc.step_idx = step_idx; apc.max_seq_len = MS;
-          apc.window_size = ctx.sliding_window;
+          if (ctx.use_paged_kv && ctx.paged_kv) {
+              /* Paged: window_size=block_size, N=num_blocks, K=seq_offset(0) */
+              apc.window_size = ctx.paged_kv->block_size;
+              uint32_t seq_idx = 0;  /* single-sequence for now */
+              apc.N = ctx.paged_kv->sequences[seq_idx].num_logical_blocks;
+              apc.K = 0;  /* seq_offset for batched queries */
+          } else {
+              apc.window_size = ctx.kv_policy.config.window_size;
+          }
           sess.set_push_constants_by_id(lid.cached_attn, &apc, sizeof(apc)); }
 
         /* Output linear: M=seq_len, N=D, K=D */
@@ -1395,6 +1664,11 @@ inline void release_llama_context(LlamaContext* ctx) {
 
     /* KV cache */
     for (auto& bp : ctx->kv_cache) llama_release(bp);
+
+    /* Phase 32: Paged KV pool buffers */
+    for (auto& bp : ctx->kv_pool_k) llama_release(bp);
+    for (auto& bp : ctx->kv_pool_v) llama_release(bp);
+    llama_release(ctx->block_table_buf);
 
     /* Activation buffers */
     for (auto& bp : ctx->hidden_bufs) llama_release(bp);

@@ -3,10 +3,17 @@
  * @brief Architecture registry — strategy pattern for multi-arch DAG building
  *
  * Phase 25: K-Quant Dequant · Entropy Reduction · Architecture Registry.
+ * Phase 31: Multi-Architecture DAG & KV Cache Intelligence.
  *
  * Provides a registration mechanism for different model architectures
  * (LLaMA, Mistral, Phi, MoE, etc.) so the DAG builder can dispatch
  * to architecture-specific weight naming, attention, and FFN strategies.
+ *
+ * Phase 31 additions:
+ *   - rope_op_name: RoPE kernel selection (full/partial)
+ *   - ffn_op_name:  FFN activation function (silu/gelu)
+ *   - norm_op_name: Normalization kernel (rms_norm/layer_norm)
+ *   - reserved[2] + arch_ctx: forward-looking slots for Phase 32/33
  */
 
 #ifndef NF_ARCH_REGISTRY_HPP
@@ -39,17 +46,46 @@ struct nf_arch_config {
 typedef const char* (*nf_weight_name_fn)(uint32_t layer, const char* component,
                                           char* buf, size_t buf_len);
 
-/**
- * Returns the attention op name for this architecture.
- */
+/** Returns the attention op name for this architecture. */
 typedef const char* (*nf_attn_op_name_fn)();
 
+/** Returns the RoPE op name (with FP16 awareness). */
+typedef const char* (*nf_rope_op_name_fn)(bool is_fp16);
+
+/** Returns the FFN activation op name ("silu" or "gelu"). */
+typedef const char* (*nf_ffn_op_name_fn)();
+
+/** Returns the normalization op name ("rms_norm" or "layer_norm"). */
+typedef const char* (*nf_norm_op_name_fn)();
+
 /**
- * Architecture strategy — bundles weight naming with optional metadata.
+ * Architecture strategy — bundles all architecture-specific function pointers.
+ *
+ * All new fields (Phase 31) default to nullptr via aggregate init.
+ * When nullptr, the DAG builder falls back to LLaMA defaults:
+ *   rope_op_name=nullptr → "rope_batch" / "rope_batch_f16"
+ *   ffn_op_name=nullptr  → "silu"
+ *   norm_op_name=nullptr → "rms_norm"
  */
 struct nf_arch_strategy {
-    nf_weight_name_fn  weight_name;
-    nf_attn_op_name_fn attn_op_name;  /* Phase 30: attention kernel selection */
+    /* Phase 25 (original) */
+    nf_weight_name_fn   weight_name;
+    nf_attn_op_name_fn  attn_op_name;
+
+    /* Phase 31: architecture-specific kernel selection */
+    nf_rope_op_name_fn  rope_op_name;    /* nullptr → default rope_batch */
+    nf_ffn_op_name_fn   ffn_op_name;     /* nullptr → default silu */
+    nf_norm_op_name_fn  norm_op_name;    /* nullptr → default rms_norm */
+
+    /* Phase 31: opaque architecture context (e.g. Phi3ArchCtx*) */
+    void*               arch_ctx;
+
+    /* Phase 32: paged attention op name (nullptr → not supported) */
+    typedef const char* (*nf_paged_attn_op_name_fn)();
+    nf_paged_attn_op_name_fn paged_attn_op_name;
+
+    /* Reserved for Phase 33 */
+    void*               reserved[1];
 };
 
 /* ---- Global registry (fixed-size, no heap) ---- */
@@ -92,10 +128,18 @@ inline void nf_clear_arch_registry() {
     s.count = 0;
 }
 
-/* ---- Default LLaMA weight naming strategy ---- */
+/* ---- Default LLaMA strategy functions ---- */
 
 inline const char* llama_attn_op_name() { return "flash_attention_cached"; }
+inline const char* llama_paged_attn_op_name() { return "flash_attention_paged"; }
 inline const char* mistral_attn_op_name() { return "flash_attention_cached"; }
+
+inline const char* llama_rope_op_name(bool is_fp16) {
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+
+inline const char* llama_ffn_op_name() { return "silu"; }
+inline const char* llama_norm_op_name() { return "rms_norm"; }
 
 inline const char* llama_weight_name(uint32_t layer, const char* component,
                                       char* buf, size_t buf_len) {
@@ -113,17 +157,91 @@ inline const char* llama_weight_name(uint32_t layer, const char* component,
 
 inline void nf_register_llama() {
     nf_arch_strategy strat{};
-    strat.weight_name = llama_weight_name;
+    strat.weight_name  = llama_weight_name;
     strat.attn_op_name = llama_attn_op_name;
+    strat.rope_op_name = llama_rope_op_name;
+    strat.ffn_op_name  = llama_ffn_op_name;
+    strat.norm_op_name = llama_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
     nf_register_arch("llama", strat);
 }
 
 /* Mistral uses same weight names as LLaMA; difference is sliding_window in config */
 inline void nf_register_mistral() {
     nf_arch_strategy strat{};
-    strat.weight_name = llama_weight_name;
+    strat.weight_name  = llama_weight_name;
     strat.attn_op_name = mistral_attn_op_name;
+    strat.rope_op_name = llama_rope_op_name;
+    strat.ffn_op_name  = llama_ffn_op_name;
+    strat.norm_op_name = llama_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
     nf_register_arch("mistral", strat);
+}
+
+/* ---- Phi-3 strategy ---- */
+
+/* Phi-3 uses GGUF "blk.N.xxx" naming (same as LLaMA in gguf format).
+ * Key differences:
+ *   - partial RoPE (only first partial_rotary_factor * head_dim dims rotated)
+ *   - SiLU activation (same as LLaMA)
+ *   - May have fused QKV weight "blk.N.attn_qkv.weight"
+ */
+
+struct Phi3ArchCtx {
+    float    partial_rotary_factor;  /* typically 0.5 */
+    uint32_t rotary_dims;            /* = head_dim * partial_rotary_factor */
+};
+
+/* Phi-3 weight naming: same as LLaMA in GGUF format */
+inline const char* phi3_weight_name(uint32_t layer, const char* component,
+                                     char* buf, size_t buf_len) {
+    return llama_weight_name(layer, component, buf, buf_len);
+}
+
+inline const char* phi3_attn_op_name() { return "flash_attention_cached"; }
+inline const char* phi3_rope_op_name(bool is_fp16) {
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+inline const char* phi3_ffn_op_name() { return "silu"; }
+inline const char* phi3_norm_op_name() { return "rms_norm"; }
+
+inline void nf_register_phi3(Phi3ArchCtx* ctx = nullptr) {
+    nf_arch_strategy strat{};
+    strat.weight_name  = phi3_weight_name;
+    strat.attn_op_name = phi3_attn_op_name;
+    strat.rope_op_name = phi3_rope_op_name;
+    strat.ffn_op_name  = phi3_ffn_op_name;
+    strat.norm_op_name = phi3_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
+    strat.arch_ctx     = ctx;
+    nf_register_arch("phi3", strat);
+}
+
+/* ---- Helper: resolve op name with fallback ---- */
+
+inline const char* nf_resolve_rope_op(const nf_arch_strategy* strat, bool is_fp16) {
+    if (strat && strat->rope_op_name) return strat->rope_op_name(is_fp16);
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+
+inline const char* nf_resolve_ffn_op(const nf_arch_strategy* strat) {
+    if (strat && strat->ffn_op_name) return strat->ffn_op_name();
+    return "silu";
+}
+
+inline const char* nf_resolve_norm_op(const nf_arch_strategy* strat) {
+    if (strat && strat->norm_op_name) return strat->norm_op_name();
+    return "rms_norm";
+}
+
+inline const char* nf_resolve_attn_op(const nf_arch_strategy* strat) {
+    if (strat && strat->attn_op_name) return strat->attn_op_name();
+    return "flash_attention_cached";
+}
+
+inline const char* nf_resolve_paged_attn_op(const nf_arch_strategy* strat) {
+    if (strat && strat->paged_attn_op_name) return strat->paged_attn_op_name();
+    return "flash_attention_paged";
 }
 
 } /* namespace nf */

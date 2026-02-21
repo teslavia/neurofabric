@@ -1466,6 +1466,95 @@ kernel void argmax_rows(device const float* in  [[buffer(0)]],
     }
     out[id] = best_idx;
 }
+
+/* ---- Phase 32: Paged Attention Kernel ---- */
+
+kernel void flash_attention_paged(
+        device const float* Q           [[buffer(0)]],
+        device const float* K_pool      [[buffer(1)]],
+        device const float* V_pool      [[buffer(2)]],
+        device const uint*  block_table [[buffer(3)]],
+        device float*       out         [[buffer(4)]],
+        constant PushConstants& pc      [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint head    = id.y;
+    uint q_pos   = id.x;
+    uint dim     = pc.head_dim;
+    uint n_kv    = (pc.M > 0 && pc.M < pc.n_heads) ? pc.M : pc.n_heads;
+    uint kv_head = head * n_kv / pc.n_heads;
+    uint bsz     = pc.window_size;  /* block_size passed via window_size field */
+
+    if (head >= pc.n_heads) return;
+    if (bsz == 0) bsz = 16;
+
+    /* Decode mode: q_pos must be 0 for single-token */
+    uint max_kv_pos = pc.step_idx;
+    if (pc.step_idx == 0) {
+        /* Prefill mode */
+        if (q_pos >= pc.seq_len) return;
+        max_kv_pos = q_pos;
+    } else {
+        if (q_pos >= 1) return;
+    }
+
+    float scale = rsqrt(float(dim));
+    float m_prev = -1e30f;
+    float l_prev = 0.0f;
+    float acc[128];
+    for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+    /* seq_offset stored in pc.K field for batched queries */
+    uint q_base = (pc.K + q_pos) * pc.n_heads * dim + head * dim;
+    /* For non-batched: K=0, so q_base = q_pos * n_heads * dim + head * dim */
+
+    uint num_logical_blocks = (max_kv_pos + bsz) / bsz;
+    if (num_logical_blocks > pc.N) num_logical_blocks = pc.N;
+    /* pc.N = num_blocks allocated for this sequence */
+
+    /* Block-by-block online softmax */
+    for (uint lb = 0; lb < num_logical_blocks; ++lb) {
+        uint phys = block_table[lb];
+        /* K_pool layout: [phys_block][n_kv_heads][block_size][head_dim] */
+        uint block_base = (phys * n_kv + kv_head) * bsz * dim;
+
+        uint t_start = lb * bsz;
+        uint t_end   = min(t_start + bsz - 1, max_kv_pos);
+        uint t_count = t_end - t_start + 1;
+
+        /* Tile: compute scores, find tile max */
+        float tile_max = -1e30f;
+        for (uint t = 0; t < t_count; ++t) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[q_base + d] * K_pool[block_base + t * dim + d];
+            dot *= scale;
+            if (dot > tile_max) tile_max = dot;
+        }
+
+        /* Online softmax merge */
+        float m_new = max(m_prev, tile_max);
+        float correction = exp(m_prev - m_new);
+        l_prev *= correction;
+        for (uint d = 0; d < dim; ++d) acc[d] *= correction;
+
+        for (uint t = 0; t < t_count; ++t) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[q_base + d] * K_pool[block_base + t * dim + d];
+            float w = exp(dot * scale - m_new);
+            l_prev += w;
+            for (uint d = 0; d < dim; ++d)
+                acc[d] += w * V_pool[block_base + t * dim + d];
+        }
+        m_prev = m_new;
+    }
+
+    /* Normalize */
+    float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
+    uint out_base = (pc.K + q_pos) * pc.n_heads * dim + head * dim;
+    for (uint d = 0; d < dim; ++d)
+        out[out_base + d] = acc[d] * inv_l;
+}
 )";
 
 /* ================================================================== */
@@ -2404,6 +2493,49 @@ static nf_status dispatch_flash_attn_cached(nf_provider_metal* prov, const char*
     return NF_OK;
 }
 
+/* Phase 32: Paged attention dispatch */
+static nf_status dispatch_flash_attn_paged(nf_provider_metal* prov, const char* op_name,
+        const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
+    if (n_in < 4 || n_out < 1) return NF_ERROR_INVALID_ARG;
+    auto* q_mb       = reinterpret_cast<MetalBuffer*>(inputs[0]);
+    auto* k_pool_mb  = reinterpret_cast<MetalBuffer*>(inputs[1]);
+    auto* v_pool_mb  = reinterpret_cast<MetalBuffer*>(inputs[2]);
+    auto* bt_mb      = reinterpret_cast<MetalBuffer*>(inputs[3]);
+    auto* out_mb     = reinterpret_cast<MetalBuffer*>(outputs[0]);
+    const uint8_t* pc = get_push_constants(inputs);
+    out_mb->gpu_done.store(false, std::memory_order_release);
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        [enc setComputePipelineState:prov->pso[PSO_FLASH_ATTN_PAGED]];
+        [enc setBuffer:q_mb->mtl_buffer       offset:0 atIndex:0];
+        [enc setBuffer:k_pool_mb->mtl_buffer  offset:0 atIndex:1];
+        [enc setBuffer:v_pool_mb->mtl_buffer  offset:0 atIndex:2];
+        [enc setBuffer:bt_mb->mtl_buffer      offset:0 atIndex:3];
+        [enc setBuffer:out_mb->mtl_buffer     offset:0 atIndex:4];
+        if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+        uint32_t seq_len = 1, n_heads = 1, step_idx = 0;
+        if (pc) {
+            std::memcpy(&seq_len,  pc,      sizeof(uint32_t));
+            std::memcpy(&n_heads,  pc + 4,  sizeof(uint32_t));
+            std::memcpy(&step_idx, pc + 32, sizeof(uint32_t));
+        }
+        uint32_t grid_x = (step_idx == 0) ? seq_len : 1;
+        [enc dispatchThreads:MTLSizeMake(grid_x, n_heads, 1)
+       threadsPerThreadgroup:MTLSizeMake(
+           MIN((NSUInteger)grid_x, (NSUInteger)16),
+           MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
+        [enc endEncoding];
+        uint32_t ec = grid_x * n_heads;
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            record_timing(cb, op_name, (uint8_t)out_mb->desc.dtype, ec);
+            out_mb->gpu_done.store(true, std::memory_order_release); out_mb->fence_cv.notify_all();
+        }];
+        [cmdBuf commit];
+    }
+    return NF_OK;
+}
+
 /* Phase 29: Fused dequant_q4_0 + linear dispatch */
 static nf_status dispatch_fused_dq4_linear(nf_provider_metal* prov, const char* op_name,
         const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
@@ -2486,6 +2618,7 @@ static void init_dispatch_maps() {
         {"flash_attention_cached",    dispatch_flash_attn_cached},
         {"dequant_q4_0_linear",       dispatch_fused_dq4_linear},
         {"dequant_q4_0_linear_f16",   dispatch_fused_dq4_linear},
+        {"flash_attention_paged",     dispatch_flash_attn_paged},
     };
 
     /* Register all dequant ops into the main dispatch map */

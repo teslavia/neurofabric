@@ -36,6 +36,8 @@ enum MetalPSO : uint16_t {
     PSO_DEQUANT_Q5_K_F16,
     /* Phase 29: Fused dequant+linear */
     PSO_FUSED_DQ4_LINEAR, PSO_FUSED_DQ4_LINEAR_F16,
+    /* Phase 32: Paged attention */
+    PSO_FLASH_ATTN_PAGED,
     /* Sentinel */
     PSO_COUNT
 };
@@ -103,6 +105,8 @@ static constexpr PSORegistration kPSOTable[] = {
     /* Phase 29: Fused dequant+linear */
     { PSO_FUSED_DQ4_LINEAR,     "dequant_q4_0_linear_tiled",     false },
     { PSO_FUSED_DQ4_LINEAR_F16, "dequant_q4_0_linear_tiled_f16", false },
+    /* Phase 32: Paged attention */
+    { PSO_FLASH_ATTN_PAGED,     "flash_attention_paged",         false },
 };
 
 static constexpr uint16_t kPSOTableSize = sizeof(kPSOTable) / sizeof(kPSOTable[0]);
