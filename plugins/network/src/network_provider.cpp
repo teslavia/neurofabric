@@ -25,6 +25,7 @@
 #include "payload_serializer.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
@@ -410,6 +411,25 @@ static nf_status net_init(nf_provider self) {
     ::setsockopt(net->sock, IPPROTO_TCP, TCP_NODELAY,
                  reinterpret_cast<const char*>(&flag), sizeof(flag));
 
+    /* Phase 14: keepalive + send/recv timeouts */
+    int keepalive = 1;
+    ::setsockopt(net->sock, SOL_SOCKET, SO_KEEPALIVE,
+                 reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
+
+#ifdef _WIN32
+    DWORD tv_ms = static_cast<DWORD>(NF_SOCKET_TIMEOUT_MS);
+    ::setsockopt(net->sock, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&tv_ms), sizeof(tv_ms));
+    ::setsockopt(net->sock, SOL_SOCKET, SO_SNDTIMEO,
+                 reinterpret_cast<const char*>(&tv_ms), sizeof(tv_ms));
+#else
+    struct timeval tv;
+    tv.tv_sec  = NF_SOCKET_TIMEOUT_MS / 1000;
+    tv.tv_usec = (NF_SOCKET_TIMEOUT_MS % 1000) * 1000;
+    ::setsockopt(net->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(net->sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+
     /* Connect */
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -560,12 +580,19 @@ static nf_status net_dispatch(nf_provider self,
         return NF_ERROR_DEVICE_LOST;
     }
 
-    /* Wait for response (blocking — pool thread is dedicated) */
+    /* Wait for response (Phase 14: bounded deadline instead of forever) */
     {
         std::unique_lock<std::mutex> lk(pt->mu);
-        pt->cv.wait(lk, [&pt] {
-            return pt->completed.load(std::memory_order_acquire);
-        });
+        bool ok = pt->cv.wait_for(lk,
+            std::chrono::milliseconds(NF_SOCKET_TIMEOUT_MS),
+            [&pt] {
+                return pt->completed.load(std::memory_order_acquire);
+            });
+        if (!ok) {
+            std::lock_guard<std::mutex> plk(net->pending_mu);
+            net->pending.erase(tid);
+            return NF_ERROR_DEVICE_LOST;
+        }
     }
 
     return pt->result;
@@ -574,12 +601,17 @@ static nf_status net_dispatch(nf_provider self,
 static nf_status net_synchronize(nf_provider self) {
     auto* net = reinterpret_cast<nf_provider_network*>(self);
 
-    /* Spin until all pending tasks drain */
+    /* Phase 14: bounded deadline instead of infinite busy-spin */
+    auto deadline = std::chrono::steady_clock::now()
+                  + std::chrono::milliseconds(NF_SOCKET_TIMEOUT_MS);
     for (;;) {
-        std::lock_guard<std::mutex> lk(net->pending_mu);
-        if (net->pending.empty()) return NF_OK;
-        /* Brief yield to avoid busy-spin */
-        std::this_thread::yield();
+        {
+            std::lock_guard<std::mutex> lk(net->pending_mu);
+            if (net->pending.empty()) return NF_OK;
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+            return NF_ERROR_DEVICE_LOST;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 

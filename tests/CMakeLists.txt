@@ -61,6 +61,32 @@ target_include_directories(nf_nfir_e2e_test PRIVATE
 )
 add_test(NAME nfir_e2e COMMAND nf_nfir_e2e_test)
 
+add_executable(nf_context_hub_test context_hub_test.cpp)
+target_link_libraries(nf_context_hub_test PRIVATE nf_core)
+target_include_directories(nf_context_hub_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+)
+add_test(NAME context_hub COMMAND nf_context_hub_test)
+
+add_executable(nf_split_llama_mock_test
+    split_llama_mock_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+)
+target_link_libraries(nf_split_llama_mock_test PRIVATE nf_core)
+target_include_directories(nf_split_llama_mock_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/src
+)
+add_test(NAME split_llama_mock COMMAND nf_split_llama_mock_test)
+
+add_executable(nf_profiling_test profiling_test.cpp)
+target_link_libraries(nf_profiling_test PRIVATE nf_core)
+target_include_directories(nf_profiling_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+)
+add_test(NAME profiling COMMAND nf_profiling_test)
+
 if(NF_PLUGIN_METAL)
     add_executable(nf_silicon_test silicon_test.cpp)
     target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)

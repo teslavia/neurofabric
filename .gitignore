@@ -28,3 +28,4 @@ __pycache__/
 *.pyc
 *.nfir
 **/docs/**
+build-rel/

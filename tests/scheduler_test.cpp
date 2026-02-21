@@ -239,29 +239,32 @@ static void test_context_hub_basic() {
     auto [buf1, ops1] = make_mock_tensor(4096);
     nf::TensorView tv1(buf1, ops1);
 
-    auto st = hub.put("agent/planner/kv/layer_0", "planner_agent",
-                       std::move(tv1), 0, 1);
+    // Token keys: [10,20,30,40] and [10,20,30,50]
+    std::vector<int32_t> key1 = {10, 20, 30, 40};
+    auto st = hub.put(key1, "planner_agent", std::move(tv1), 0, 1);
     assert(st == NF_OK);
 
     auto [buf2, ops2] = make_mock_tensor(2048);
     nf::TensorView tv2(buf2, ops2);
 
-    st = hub.put("agent/planner/kv/layer_1", "planner_agent",
-                  std::move(tv2), 0, 2);
+    std::vector<int32_t> key2 = {10, 20, 30, 50};
+    st = hub.put(key2, "planner_agent", std::move(tv2), 0, 2);
     assert(st == NF_OK);
 
     // Exact match
-    auto r1 = hub.get("agent/planner/kv/layer_0");
+    auto r1 = hub.get(std::span<const int32_t>(key1));
     assert(r1.found);
-    assert(r1.matched_key == "agent/planner/kv/layer_0");
+    assert(r1.match_len == 4);
 
-    // Prefix match: "agent/planner/kv/layer_1/head_0" should match "layer_1"
-    auto r2 = hub.get("agent/planner/kv/layer_1/head_0");
+    // Prefix match: [10,20,30,50,60] should match key2 (len 4)
+    std::vector<int32_t> longer = {10, 20, 30, 50, 60};
+    auto r2 = hub.get(std::span<const int32_t>(longer));
     assert(r2.found);
-    assert(r2.matched_key == "agent/planner/kv/layer_1");
+    assert(r2.match_len == 4);
 
     // No match
-    auto r3 = hub.get("agent/vision/frame");
+    std::vector<int32_t> miss = {99, 88, 77};
+    auto r3 = hub.get(std::span<const int32_t>(miss));
     assert(!r3.found);
 
     // Stats
@@ -284,7 +287,7 @@ static void test_context_hub_eviction() {
     for (int i = 0; i < 4; ++i) {
         auto [buf, ops] = make_mock_tensor(4096);
         nf::TensorView tv(buf, ops);
-        std::string key = "cache/entry_" + std::to_string(i);
+        std::vector<int32_t> key = {100, static_cast<int32_t>(i)};
         // ttl_ms = 1000 so they're evictable (not pinned)
         auto st = hub.put(key, "test", std::move(tv), 1000, i);
         assert(st == NF_OK);
@@ -306,21 +309,23 @@ static void test_context_hub_evict_prefix() {
     nf::ContextHub hub(1024 * 1024, NF_EVICT_LRU);
 
     auto [b1, o1] = make_mock_tensor(1024);
-    hub.put("agent/a/data", "a", nf::TensorView(b1, o1), 0, 0);
+    std::vector<int32_t> key_a = {1, 2, 3};
+    hub.put(key_a, "a", nf::TensorView(b1, o1), 0, 0);
 
     auto [b2, o2] = make_mock_tensor(1024);
-    hub.put("agent/b/data", "b", nf::TensorView(b2, o2), 0, 0);
+    std::vector<int32_t> key_b = {4, 5, 6};
+    hub.put(key_b, "b", nf::TensorView(b2, o2), 0, 0);
 
     assert(hub.stats().entry_count == 2);
 
-    // Evict only agent/a subtree
-    hub.evict("agent/a");
+    // Evict only key_a subtree
+    hub.evict(std::span<const int32_t>(key_a));
     assert(hub.stats().entry_count == 1);
 
-    auto r = hub.get("agent/a/data");
+    auto r = hub.get(std::span<const int32_t>(key_a));
     assert(!r.found);
 
-    r = hub.get("agent/b/data");
+    r = hub.get(std::span<const int32_t>(key_b));
     assert(r.found);
 
     std::printf("  PASS: ContextHub evict by prefix\n");

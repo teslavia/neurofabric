@@ -281,14 +281,16 @@ static void test_split_inference() {
         nf::TensorView k_view(reinterpret_cast<nf_buffer>(hub_buf), recv_ops);
 
         nf::ContextHub hub(16 * 1024 * 1024, NF_EVICT_LRU);
-        auto st = hub.put("agent/llm/kv_cache/K", "test_agent",
+        std::vector<int32_t> kv_tokens = {100, 200, 300, 400};
+        auto st = hub.put(kv_tokens, "test_agent",
                           k_view.share(), 0, 1);
         assert(st == NF_OK);
         std::printf("    [server] ContextHub: inserted K_Cache\n");
 
         /* ---- ContextHub: lookup by prefix ---- */
-        auto found = hub.get("agent/llm/kv_cache/K");
+        auto found = hub.get(std::span<const int32_t>(kv_tokens));
         assert(found.found);
+        assert(found.match_len == 4);
         std::printf("    [server] ContextHub: found K via prefix lookup\n");
 
         /* ---- Decode step: output[i] = tanh(K[i]) ---- */
@@ -320,7 +322,7 @@ static void test_split_inference() {
         std::printf("    [server] sent %zu bytes result\n", tensor_bytes);
 
         /* ---- Evict all and verify ---- */
-        hub.evict("");
+        hub.evict();
         auto stats2 = hub.stats();
         assert(stats2.used_bytes == 0);
         assert(stats2.entry_count == 0);

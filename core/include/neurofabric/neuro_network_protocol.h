@@ -77,7 +77,18 @@ typedef enum nf_layout_type {
 } nf_layout_type;
 
 /* ------------------------------------------------------------------ */
-/*  4. Tensor Wire Descriptor (packed, no padding)                     */
+/*  4. Tensor Wire Flags                                               */
+/*     Per-tensor metadata flags carried in nf_tensor_wire.            */
+/* ------------------------------------------------------------------ */
+
+/** Retain tensor in ContextHub across requests (stateful KV cache). */
+#define NF_TENSOR_FLAG_STATEFUL  ((uint16_t)0x0001)
+
+/** Payload is int32_t token sequence (prefix key for cache lookup). */
+#define NF_TENSOR_FLAG_PREFIX    ((uint16_t)0x0002)
+
+/* ------------------------------------------------------------------ */
+/*  5. Tensor Wire Descriptor (packed, no padding)                     */
 /*     One per tensor in the frame. Immediately precedes its payload.  */
 /* ------------------------------------------------------------------ */
 
@@ -87,13 +98,15 @@ typedef struct nf_tensor_wire {
     uint8_t   dtype;                    /**< nf_dtype cast to u8       */
     uint8_t   ndim;                     /**< Number of dimensions      */
     uint16_t  layout;                   /**< nf_layout_type cast to u16 */
+    uint16_t  flags;                    /**< Bitmask of NF_TENSOR_FLAG_* */
+    uint16_t  _pad0;                    /**< Alignment padding         */
     uint64_t  shape[NF_MAX_DIMS];       /**< Shape array               */
     uint64_t  strides[NF_MAX_DIMS];     /**< Byte strides (0=contig)   */
     uint64_t  payload_bytes;            /**< Exact byte count of data  */
 } nf_tensor_wire;
 
 /* ------------------------------------------------------------------ */
-/*  5. Frame Header (packed)                                           */
+/*  6. Frame Header (packed)                                           */
 /*     Fixed-size prefix for every network message.                    */
 /* ------------------------------------------------------------------ */
 
@@ -127,13 +140,13 @@ typedef struct nf_frame_header {
 #pragma pack(pop)
 
 /* ------------------------------------------------------------------ */
-/*  6. Compile-time size assertions                                    */
+/*  7. Compile-time size assertions                                    */
 /* ------------------------------------------------------------------ */
 
 /** Verify no compiler inserted hidden padding. */
 #ifdef __cplusplus
 static_assert(sizeof(nf_tensor_wire) ==
-    1 + 1 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
+    1 + 1 + 2 + 2 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
     "nf_tensor_wire has unexpected padding");
 
 static_assert(sizeof(nf_frame_header) ==
@@ -141,7 +154,7 @@ static_assert(sizeof(nf_frame_header) ==
     "nf_frame_header has unexpected padding");
 #else
 _Static_assert(sizeof(nf_tensor_wire) ==
-    1 + 1 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
+    1 + 1 + 2 + 2 + 2 + NF_MAX_DIMS * 8 + NF_MAX_DIMS * 8 + 8,
     "nf_tensor_wire has unexpected padding");
 
 _Static_assert(sizeof(nf_frame_header) ==
@@ -150,7 +163,7 @@ _Static_assert(sizeof(nf_frame_header) ==
 #endif
 
 /* ------------------------------------------------------------------ */
-/*  7. Endianness Helpers                                              */
+/*  8. Endianness Helpers                                              */
 /*     Wire format is little-endian. On big-endian hosts these swap.   */
 /*     ARM (Apple Silicon, RK3588) and x86 are all LE, so these are   */
 /*     typically no-ops — but correctness demands we define them.      */
@@ -173,7 +186,7 @@ _Static_assert(sizeof(nf_frame_header) ==
 #endif
 
 /* ------------------------------------------------------------------ */
-/*  8. CRC32 (Castagnoli / CRC-32C)                                    */
+/*  9. CRC32 (Castagnoli / CRC-32C)                                    */
 /*     Minimal software implementation. On Apple Silicon this can be   */
 /*     replaced with __builtin_arm_crc32c for hardware acceleration.   */
 /* ------------------------------------------------------------------ */
@@ -197,7 +210,7 @@ static inline uint32_t nf_frame_compute_crc(const nf_frame_header* hdr) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  9. Payload Transport Constants & State Machine                     */
+/* 10. Payload Transport Constants & State Machine                     */
 /*     Phase 5: chunked tensor payload transfer with timeouts.         */
 /* ------------------------------------------------------------------ */
 

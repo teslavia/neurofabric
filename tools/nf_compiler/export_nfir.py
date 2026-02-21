@@ -235,12 +235,65 @@ def _demo_graph(output: str, remote_nodes: Optional[str] = None):
     print(f"[nf_compiler] wrote {output}")
 
 
+def _split_llama_mock(output: str, remote_nodes: Optional[str] = None):
+    """Split-LLaMA mock: prefill(local) → relay(remote) → decode(remote).
+
+    Tensor layout (LLaMA-like dimensions):
+      T0: embed_weights   WEIGHT   [4096, 512]   — embedding table
+      T1: input_tokens    ACTIV    [1, 128]       — token IDs
+      T2: hidden_state    ACTIV    [1, 128, 4096] — prefill output
+      T3: kv_cache        ACTIV    [1, 32, 128, 128] — KV cache
+      T4: relay_out       ACTIV    [1, 128, 4096] — relayed hidden
+      T5: logits          ACTIV    [1, 128, 32000] — output logits
+    """
+    embed_shape = (4096, 512)
+    embed_weights = np.random.default_rng(42).standard_normal(
+        embed_shape).astype(np.float32) * 0.02
+
+    remote_set = set()
+    if remote_nodes:
+        remote_set = {int(x) for x in remote_nodes.split(',')}
+
+    builder = NfirBuilder()
+    # Tensors
+    builder.add_tensor(0, DTYPE_F32, embed_shape, USAGE_WEIGHT,
+                       weight_data=embed_weights)
+    builder.add_tensor(1, DTYPE_I32, (1, 128), USAGE_ACTIVATION)
+    builder.add_tensor(2, DTYPE_F32, (1, 128, 4096), USAGE_ACTIVATION)
+    builder.add_tensor(3, DTYPE_F32, (1, 32, 128, 128), USAGE_ACTIVATION)
+    builder.add_tensor(4, DTYPE_F32, (1, 128, 4096), USAGE_ACTIVATION)
+    builder.add_tensor(5, DTYPE_F32, (1, 128, 32000), USAGE_ACTIVATION)
+
+    # Nodes
+    builder.add_node(0, "attention_prefill", [0, 1], [2, 3],
+                     task_flags=TASK_REMOTE if 0 in remote_set else TASK_NONE)
+    builder.add_node(1, "network_relay", [2, 3], [4],
+                     task_flags=TASK_REMOTE)  # always remote
+    builder.add_node(2, "decode_step", [4], [5],
+                     task_flags=TASK_REMOTE if 2 in remote_set else TASK_NONE)
+    builder.build(output)
+    print(f"[nf_compiler] wrote {output} (split_llama_mock)")
+
+
+PRESETS = {
+    'demo': _demo_graph,
+    'split_llama_mock': _split_llama_mock,
+}
+
+
 if __name__ == '__main__':
     output = '/tmp/demo_pipeline.nfir'
     remote = None
+    preset = 'demo'
     for arg in sys.argv[1:]:
         if arg.startswith('--output='):
             output = arg.split('=', 1)[1]
         elif arg.startswith('--remote-nodes='):
             remote = arg.split('=', 1)[1]
-    _demo_graph(output, remote)
+        elif arg.startswith('--preset='):
+            preset = arg.split('=', 1)[1]
+
+    if preset not in PRESETS:
+        print(f"Unknown preset '{preset}'. Available: {', '.join(PRESETS)}")
+        sys.exit(1)
+    PRESETS[preset](output, remote)

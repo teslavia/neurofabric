@@ -18,6 +18,7 @@
 #include "neurofabric/neuro_ir_format.h"
 #include "neurofabric/PipelineEngine.hpp"
 #include "neurofabric/GraphBuilder.hpp"
+#include "neurofabric/ContextHub.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -290,6 +291,19 @@ static int run_coord(const char* nfir_path, const char* worker_host,
     }
     std::printf("[coord] connected to worker\n");
 
+    /* Phase 14: keepalive + send/recv timeout on coordinator socket */
+    {
+        int ka = 1;
+        ::setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+        int nd = 1;
+        ::setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+        struct timeval tv;
+        tv.tv_sec  = 30;
+        tv.tv_usec = 0;
+        ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+
     /* Create engine with mock local + network remote provider */
     nf::PipelineEngine engine(2);
 
@@ -452,6 +466,10 @@ static int run_worker(uint16_t port) {
     nf_provider mock_prov = reinterpret_cast<nf_provider>(0x1);
     engine.register_provider(mock_prov, mock_vt, NF_AFFINITY_ANY);
 
+    /* Phase 13: ContextHub for stateful KV cache retention */
+    nf::ContextHub cache(64 * 1024 * 1024, NF_EVICT_LRU);
+    std::printf("[worker] ContextHub: 64 MB budget, LRU eviction\n");
+
     for (;;) {
         struct sockaddr_in cli{};
         socklen_t cli_len = sizeof(cli);
@@ -462,6 +480,19 @@ static int run_worker(uint16_t port) {
         char cli_ip[INET_ADDRSTRLEN];
         ::inet_ntop(AF_INET, &cli.sin_addr, cli_ip, sizeof(cli_ip));
         std::printf("[worker] coordinator connected: %s\n", cli_ip);
+
+        /* Phase 14: keepalive + recv/send timeout on accepted socket */
+        {
+            int ka = 1;
+            ::setsockopt(conn, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+            int nd = 1;
+            ::setsockopt(conn, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+            struct timeval tv;
+            tv.tv_sec  = 30;
+            tv.tv_usec = 0;
+            ::setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            ::setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        }
 
         bool done = false;
         while (!done) {
@@ -478,9 +509,13 @@ static int run_worker(uint16_t port) {
                         req.op_name, req.n_input_tensors);
             auto t0 = std::chrono::steady_clock::now();
 
-            /* Receive input tensors */
+            /* Receive input tensors — Phase 13: detect stateful/prefix */
             std::vector<nf_buffer> in_bufs(req.n_input_tensors);
             std::vector<nf_buffer_ops> in_ops(req.n_input_tensors);
+            std::vector<bool> retained(req.n_input_tensors, false);
+            std::vector<int32_t> prefix_tokens;
+            bool has_prefix = false;
+
             for (uint8_t i = 0; i < req.n_input_tensors; ++i) {
                 nf_tensor_wire tw{};
                 if (!recv_all(conn, &tw, sizeof(tw))) { done = true; break; }
@@ -496,8 +531,61 @@ static int run_worker(uint16_t port) {
                 in_ops[i].map(in_bufs[i], &ptr);
                 if (!recv_all(conn, ptr, tw.payload_bytes)) { done = true; break; }
                 in_ops[i].unmap(in_bufs[i]);
+
+                /* Phase 13: PREFIX tensor — payload is int32_t token IDs */
+                if (tw.flags & NF_TENSOR_FLAG_PREFIX) {
+                    size_t n_tokens = tw.payload_bytes / sizeof(int32_t);
+                    in_ops[i].map(in_bufs[i], &ptr);
+                    prefix_tokens.assign(
+                        static_cast<const int32_t*>(ptr),
+                        static_cast<const int32_t*>(ptr) + n_tokens);
+                    in_ops[i].unmap(in_bufs[i]);
+                    has_prefix = true;
+                    std::printf("[worker] prefix: %zu tokens\n", n_tokens);
+                }
+
+                /* Phase 13: STATEFUL tensor — retain in ContextHub */
+                if ((tw.flags & NF_TENSOR_FLAG_STATEFUL) && has_prefix) {
+                    nf::TensorView tv(in_bufs[i], in_ops[i]);
+                    in_ops[i].retain(in_bufs[i]); /* keep our handle too */
+                    cache.put(prefix_tokens, "remote",
+                              tv.share(), 0, 0);
+                    retained[i] = true;
+                    std::printf("[worker] cached stateful tensor %u "
+                                "(%llu bytes)\n", i,
+                                (unsigned long long)tw.payload_bytes);
+                }
             }
             if (done) break;
+
+            /* Phase 13: State-routed dispatch — check cache before exec */
+            if (has_prefix) {
+                auto hit = cache.get(
+                    std::span<const int32_t>(prefix_tokens));
+                if (hit.found) {
+                    std::printf("[worker] cache HIT: %u/%zu tokens matched\n",
+                                hit.match_len, prefix_tokens.size());
+                    /* Inject cached tensor as input[0] (KV cache slot) */
+                    nf_buffer cached_buf = hit.tensor.handle();
+                    nf_buffer_ops cached_ops = hit.tensor.ops();
+                    if (req.n_input_tensors > 0) {
+                        /* Replace first non-prefix input with cached */
+                        for (uint8_t i = 0; i < req.n_input_tensors; ++i) {
+                            if (!retained[i]) {
+                                in_ops[i].release(in_bufs[i]);
+                                in_bufs[i] = cached_buf;
+                                in_ops[i] = cached_ops;
+                                in_ops[i].retain(in_bufs[i]);
+                                std::printf("[worker] injected cached tensor "
+                                            "at input[%u]\n", i);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    std::printf("[worker] cache MISS\n");
+                }
+            }
 
             /* Allocate output buffers (same size as first input for mock) */
             nf_buffer_info first_info{};
@@ -560,11 +648,13 @@ static int run_worker(uint16_t port) {
                 send_all(conn, &resp, sizeof(resp));
             }
 
-            /* Cleanup */
+            /* Cleanup — skip retained (stateful) buffers */
             for (uint32_t j = 0; j < n_out; ++j)
                 out_ops[j].release(out_bufs[j]);
-            for (uint8_t i = 0; i < req.n_input_tensors; ++i)
-                in_ops[i].release(in_bufs[i]);
+            for (uint8_t i = 0; i < req.n_input_tensors; ++i) {
+                if (!retained[i])
+                    in_ops[i].release(in_bufs[i]);
+            }
         }
 
         ::close(conn);

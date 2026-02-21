@@ -1,31 +1,16 @@
 /**
  * @file ContextHub.hpp
- * @brief Agent-Native Context Hub — Global State Router & Cache
+ * @brief Phase 13 — Agent-Native Context Hub with Token-ID Radix Tree
  *
  * INTERNAL TO CORE — never crosses a dynamic library boundary.
  *
- * The ContextHub is the Step 3 evolution of Neuro-Fabric: it transforms
- * the system from a "model inference engine" into a "multi-agent state
- * router". Key design principles:
+ * Compressed radix tree keyed by int32_t token-ID sequences.
+ * Enables automatic KV-cache reuse across agents sharing prompt prefixes
+ * (vLLM Radix Attention / SGLang style).
  *
- *   1. Every context entry is a named TensorView with a hierarchical
- *      key (e.g. "agent/planner/kv_cache/layer_0/head_3").
- *
- *   2. Lookup uses longest-prefix matching on the key, inspired by
- *      vLLM's Radix Attention / SGLang's RadixTree. This enables
- *      automatic KV-cache reuse across agents sharing prompt prefixes.
- *
- *   3. Eviction is pluggable: LRU, TTL-based, refcount-based, or
- *      radix-prefix deduplication.
- *
- *   4. All tensor data is managed via Phase 2's TensorView (RAII,
- *      refcounted, zero-copy slicing). The hub never copies data —
- *      it only holds shared references.
- *
- * Memory budget enforcement:
- *   The hub tracks total size_bytes of all held TensorViews.
- *   When a put() would exceed the budget, the eviction policy runs
- *   until enough space is reclaimed or the put fails.
+ * Concurrency: std::shared_mutex (multiple readers, exclusive writers).
+ * Eviction: LRU, TTL, refcount, radix-prefix (pluggable).
+ * Memory: budget-enforced; hub holds TensorView shared refs (refcounted).
  */
 
 #ifndef NF_CONTEXT_HUB_HPP
@@ -36,10 +21,11 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstring>
-#include <functional>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,17 +37,16 @@ namespace nf {
 /* ================================================================== */
 
 struct ContextEntry {
-    std::string     key;
-    std::string     agent_id;
-    TensorView      tensor;
-    uint64_t        size_bytes  = 0;
-    uint64_t        seq_id      = 0;
-    uint64_t        ttl_ms      = 0;     /**< 0 = immortal (pinned) */
-
     using Clock = std::chrono::steady_clock;
-    Clock::time_point created_at = Clock::now();
-    Clock::time_point last_access = Clock::now();
 
+    std::vector<int32_t> token_key;
+    std::string          agent_id;
+    TensorView           tensor;
+    uint64_t             size_bytes  = 0;
+    uint64_t             seq_id      = 0;
+    uint64_t             ttl_ms      = 0;  /**< 0 = immortal (pinned) */
+    Clock::time_point    created_at  = Clock::now();
+    Clock::time_point    last_access = Clock::now();
     void touch() { last_access = Clock::now(); }
 
     bool expired() const {
@@ -73,169 +58,35 @@ struct ContextEntry {
 };
 
 /* ================================================================== */
-/*  RadixNode — trie node for hierarchical key prefix matching         */
+/*  RadixNode — compressed radix tree node for token-ID sequences      */
 /*                                                                     */
-/*  Keys are split on '/' separators. Each node holds an optional      */
-/*  ContextEntry. Lookup walks the trie and returns the deepest node   */
-/*  that has an entry (longest prefix match).                          */
+/*  Each edge carries a span of token IDs (compressed path).           */
+/*  Children are keyed by the first diverging token ID.                */
 /*                                                                     */
-/*  Example tree for keys:                                             */
-/*    "agent/planner/kv/L0"                                            */
-/*    "agent/planner/kv/L1"                                            */
-/*    "agent/vision/frame"                                             */
-/*                                                                     */
-/*    root -> "agent" -> "planner" -> "kv" -> "L0" [entry]             */
-/*                                         -> "L1" [entry]             */
-/*                    -> "vision"  -> "frame" [entry]                  */
+/*  Example: insert [1,2,3,4,5] then [1,2,3,6,7]                      */
+/*    root -> [1,2,3] (intermediate, no entry)                         */
+/*              |-> 4: [4,5] (entry A)                                 */
+/*              |-> 6: [6,7] (entry B)                                 */
 /* ================================================================== */
 
 struct RadixNode {
-    std::string segment;
-    std::unordered_map<std::string, std::unique_ptr<RadixNode>> children;
+    std::vector<int32_t> segment;
+    std::unordered_map<int32_t, std::unique_ptr<RadixNode>> children;
     std::unique_ptr<ContextEntry> entry;
 };
 
 /* ================================================================== */
-/*  ContextHub — the global agent state router                         */
+/*  ContextHub — token-ID radix tree with budget-enforced caching      */
 /* ================================================================== */
 
 class ContextHub {
 public:
-    ContextHub(uint64_t budget_bytes, nf_eviction_policy policy)
-        : budget_(budget_bytes), used_(0), policy_(policy) {
-        root_ = std::make_unique<RadixNode>();
-    }
-
-    ~ContextHub() = default;
-
-    ContextHub(const ContextHub&) = delete;
-    ContextHub& operator=(const ContextHub&) = delete;
-
-    /* -- Put: insert or update a context entry ---------------------- */
-
-    nf_status put(const std::string& key,
-                  const std::string& agent_id,
-                  TensorView tensor,
-                  uint64_t ttl_ms = 0,
-                  uint64_t seq_id = 0) {
-        std::lock_guard<std::mutex> lk(mu_);
-
-        uint64_t size = tensor.valid() ? tensor.desc().size_bytes : 0;
-
-        // Evict until we have room
-        while (used_ + size > budget_ && used_ > 0) {
-            if (!evict_one()) {
-                return NF_ERROR_OUT_OF_MEMORY;
-            }
-        }
-
-        auto segments = split_key(key);
-        RadixNode* node = root_.get();
-
-        for (const auto& seg : segments) {
-            auto it = node->children.find(seg);
-            if (it == node->children.end()) {
-                auto child = std::make_unique<RadixNode>();
-                child->segment = seg;
-                auto* raw = child.get();
-                node->children[seg] = std::move(child);
-                node = raw;
-            } else {
-                node = it->second.get();
-            }
-        }
-
-        // If replacing, reclaim old size
-        if (node->entry) {
-            used_ -= node->entry->size_bytes;
-            all_entries_.erase(
-                std::remove(all_entries_.begin(), all_entries_.end(), node),
-                all_entries_.end());
-        }
-
-        auto entry = std::make_unique<ContextEntry>();
-        entry->key        = key;
-        entry->agent_id   = agent_id;
-        entry->tensor     = std::move(tensor);
-        entry->size_bytes = size;
-        entry->ttl_ms     = ttl_ms;
-        entry->seq_id     = seq_id;
-        node->entry = std::move(entry);
-
-        all_entries_.push_back(node);
-        used_ += size;
-        return NF_OK;
-    }
-
-    /* -- Get: longest-prefix match lookup --------------------------- */
-
     struct LookupResult {
-        TensorView  tensor;   /**< Shared ref (retained) */
-        std::string matched_key;
-        bool        found = false;
+        TensorView           tensor;
+        std::vector<int32_t> matched_key;
+        uint32_t             match_len = 0;
+        bool                 found = false;
     };
-
-    LookupResult get(const std::string& key_prefix) {
-        std::lock_guard<std::mutex> lk(mu_);
-
-        auto segments = split_key(key_prefix);
-        RadixNode* node = root_.get();
-        RadixNode* best = nullptr;
-
-        for (const auto& seg : segments) {
-            auto it = node->children.find(seg);
-            if (it == node->children.end()) break;
-            node = it->second.get();
-            if (node->entry && !node->entry->expired()) {
-                best = node;
-            }
-        }
-
-        LookupResult result;
-        if (best && best->entry) {
-            best->entry->touch();
-            result.tensor      = best->entry->tensor.share();
-            result.matched_key = best->entry->key;
-            result.found       = true;
-        }
-        return result;
-    }
-
-    /* -- Evict: remove entries by prefix ---------------------------- */
-
-    nf_status evict(const std::string& key_prefix) {
-        std::lock_guard<std::mutex> lk(mu_);
-
-        if (key_prefix.empty()) {
-            // Evict everything
-            root_ = std::make_unique<RadixNode>();
-            all_entries_.clear();
-            used_ = 0;
-            return NF_OK;
-        }
-
-        auto segments = split_key(key_prefix);
-        RadixNode* node = root_.get();
-        RadixNode* parent = nullptr;
-        std::string last_seg;
-
-        for (const auto& seg : segments) {
-            auto it = node->children.find(seg);
-            if (it == node->children.end()) return NF_ERROR_NOT_FOUND;
-            parent = node;
-            last_seg = seg;
-            node = it->second.get();
-        }
-
-        // Reclaim all entries under this subtree
-        reclaim_subtree(node);
-        if (parent) {
-            parent->children.erase(last_seg);
-        }
-        return NF_OK;
-    }
-
-    /* -- Stats ------------------------------------------------------ */
 
     struct Stats {
         uint64_t used_bytes   = 0;
@@ -243,36 +94,256 @@ public:
         uint32_t entry_count  = 0;
     };
 
+    ContextHub(uint64_t budget_bytes, nf_eviction_policy policy)
+        : budget_(budget_bytes), used_(0), policy_(policy) {
+        root_ = std::make_unique<RadixNode>();
+    }
+
+    ~ContextHub() = default;
+    ContextHub(const ContextHub&) = delete;
+    ContextHub& operator=(const ContextHub&) = delete;
+    /* -- Put: insert or update a context entry ---------------------- */
+    /*                                                                 */
+    /* Phase 14: pre-allocate entry + leaf node OUTSIDE the exclusive  */
+    /* lock to minimize critical section.  On Linux pthread_rwlock     */
+    /* the writer can starve if readers continuously hold shared       */
+    /* locks; keeping the exclusive window tight avoids this.          */
+
+    nf_status put(std::span<const int32_t> token_key,
+                  const std::string& agent_id,
+                  TensorView tensor,
+                  uint64_t ttl_ms = 0,
+                  uint64_t seq_id = 0) {
+        uint64_t size = tensor.valid() ? tensor.desc().size_bytes : 0;
+
+        /* ---- Lock-free zone: heap allocations ---- */
+        auto new_entry = std::make_unique<ContextEntry>();
+        new_entry->token_key.assign(token_key.begin(), token_key.end());
+        new_entry->agent_id   = agent_id;
+        new_entry->tensor     = std::move(tensor);
+        new_entry->size_bytes = size;
+        new_entry->seq_id     = seq_id;
+        new_entry->ttl_ms     = ttl_ms;
+
+        /* Pre-build a candidate leaf (may not be used if path exists) */
+        auto candidate_leaf = std::make_unique<RadixNode>();
+        /* segment filled under lock once insertion point is known */
+
+        /* ---- Exclusive lock: tree mutation only ---- */
+        std::unique_lock<std::shared_mutex> lk(mu_);
+
+        /* Evict until we have room */
+        while (used_ + size > budget_ && used_ > 0) {
+            if (!evict_one()) return NF_ERROR_OUT_OF_MEMORY;
+        }
+
+        /* Walk / build the compressed radix path */
+        RadixNode* node = root_.get();
+        size_t pos = 0;
+
+        while (pos < token_key.size()) {
+            int32_t next_tok = token_key[pos];
+            auto it = node->children.find(next_tok);
+
+            if (it == node->children.end()) {
+                /* No child for this token — attach pre-allocated leaf */
+                candidate_leaf->segment.assign(token_key.begin() + pos,
+                                               token_key.end());
+                RadixNode* raw = candidate_leaf.get();
+                node->children[next_tok] = std::move(candidate_leaf);
+                node = raw;
+                pos = token_key.size();
+                break;
+            }
+
+            RadixNode* child = it->second.get();
+            auto& seg = child->segment;
+
+            /* Compare child segment against remaining tokens */
+            size_t remaining = token_key.size() - pos;
+            size_t match_len = 0;
+            size_t cmp_len = std::min(seg.size(), remaining);
+            while (match_len < cmp_len &&
+                   seg[match_len] == token_key[pos + match_len]) {
+                ++match_len;
+            }
+
+            if (match_len == seg.size()) {
+                /* Full segment match — descend */
+                pos += match_len;
+                node = child;
+            } else {
+                /* Partial match — split node at divergence point */
+                split_node(node, next_tok, match_len);
+                pos += match_len;
+                /* After split, node->children[next_tok] is the new
+                   intermediate; continue loop to create the new leaf */
+                node = node->children[next_tok].get();
+            }
+        }
+
+        /* Place entry at current node */
+        if (node->entry) {
+            /* Update existing — reclaim old size */
+            used_ -= node->entry->size_bytes;
+            all_entries_.erase(
+                std::remove(all_entries_.begin(), all_entries_.end(), node),
+                all_entries_.end());
+        }
+
+        node->entry = std::move(new_entry);
+        all_entries_.push_back(node);
+        used_ += size;
+
+        return NF_OK;
+    }
+    /* -- Get: longest-prefix match lookup ----------------------------- */
+
+    LookupResult get(std::span<const int32_t> token_prefix) {
+        std::shared_lock<std::shared_mutex> lk(mu_);
+
+        LookupResult result;
+        RadixNode* node = root_.get();
+        size_t pos = 0;
+        RadixNode* best = nullptr;
+        size_t best_pos = 0;
+
+        /* Check root entry */
+        if (node->entry && !node->entry->expired()) {
+            best = node;
+            best_pos = 0;
+        }
+
+        while (pos < token_prefix.size()) {
+            int32_t next_tok = token_prefix[pos];
+            auto it = node->children.find(next_tok);
+            if (it == node->children.end()) break;
+
+            RadixNode* child = it->second.get();
+            auto& seg = child->segment;
+
+            /* Compare segment against remaining tokens */
+            size_t remaining = token_prefix.size() - pos;
+            size_t cmp_len = std::min(seg.size(), remaining);
+            size_t match_len = 0;
+            while (match_len < cmp_len &&
+                   seg[match_len] == token_prefix[pos + match_len]) {
+                ++match_len;
+            }
+
+            if (match_len < seg.size()) {
+                /* Partial segment match — can't descend further */
+                break;
+            }
+
+            /* Full segment match */
+            pos += match_len;
+            node = child;
+
+            if (node->entry && !node->entry->expired()) {
+                best = node;
+                best_pos = pos;
+            }
+        }
+
+        if (best && best->entry) {
+            best->entry->touch();
+            result.tensor      = best->entry->tensor.share();
+            result.matched_key = best->entry->token_key;
+            result.match_len   = static_cast<uint32_t>(best_pos);
+            result.found       = true;
+        }
+        return result;
+    }
+
+    /* -- Evict: remove entries by prefix or clear all ----------------- */
+
+    nf_status evict(std::span<const int32_t> token_prefix = {}) {
+        std::unique_lock<std::shared_mutex> lk(mu_);
+
+        if (token_prefix.empty()) {
+            /* Clear entire tree */
+            reclaim_subtree(root_.get());
+            root_ = std::make_unique<RadixNode>();
+            return NF_OK;
+        }
+
+        /* Walk to the node matching the prefix */
+        RadixNode* parent = nullptr;
+        int32_t parent_key = 0;
+        RadixNode* node = root_.get();
+        size_t pos = 0;
+
+        while (pos < token_prefix.size()) {
+            int32_t next_tok = token_prefix[pos];
+            auto it = node->children.find(next_tok);
+            if (it == node->children.end()) return NF_ERROR_NOT_FOUND;
+
+            RadixNode* child = it->second.get();
+            auto& seg = child->segment;
+            size_t remaining = token_prefix.size() - pos;
+            size_t cmp_len = std::min(seg.size(), remaining);
+            size_t match_len = 0;
+            while (match_len < cmp_len &&
+                   seg[match_len] == token_prefix[pos + match_len]) {
+                ++match_len;
+            }
+            if (match_len < seg.size()) return NF_ERROR_NOT_FOUND;
+
+            pos += match_len;
+            parent = node;
+            parent_key = next_tok;
+            node = child;
+        }
+
+        /* Reclaim subtree and remove from parent */
+        reclaim_subtree(node);
+        if (parent) {
+            parent->children.erase(parent_key);
+        }
+        return NF_OK;
+    }
+
+    /* -- Stats -------------------------------------------------------- */
+
     Stats stats() const {
-        std::lock_guard<std::mutex> lk(mu_);
+        std::shared_lock<std::shared_mutex> lk(mu_);
         Stats s;
         s.used_bytes   = used_;
         s.budget_bytes = budget_;
         s.entry_count  = static_cast<uint32_t>(all_entries_.size());
         return s;
     }
-
 private:
-    /* -- Key splitting ---------------------------------------------- */
 
-    static std::vector<std::string> split_key(const std::string& key) {
-        std::vector<std::string> parts;
-        size_t start = 0;
-        while (start < key.size()) {
-            size_t pos = key.find('/', start);
-            if (pos == std::string::npos) {
-                parts.push_back(key.substr(start));
-                break;
-            }
-            if (pos > start) {
-                parts.push_back(key.substr(start, pos - start));
-            }
-            start = pos + 1;
-        }
-        return parts;
+    /* -- Split a child node at offset k within its segment ------------ */
+    /*                                                                    */
+    /*  Before: parent -> children[tok] -> child{seg=[A,B,C,D], ...}     */
+    /*  After:  parent -> children[tok] -> mid{seg=[A,B]}                */
+    /*                                       -> children[C] -> old{seg=[C,D], ...} */
+
+    void split_node(RadixNode* parent, int32_t child_key, size_t k) {
+        auto& child_ptr = parent->children[child_key];
+        RadixNode* old_child = child_ptr.get();
+
+        /* Create intermediate node with prefix segment */
+        auto mid = std::make_unique<RadixNode>();
+        mid->segment.assign(old_child->segment.begin(),
+                            old_child->segment.begin() + k);
+
+        /* Shorten old child's segment to suffix */
+        int32_t diverge_tok = old_child->segment[k];
+        old_child->segment.erase(old_child->segment.begin(),
+                                  old_child->segment.begin() + k);
+
+        /* Move old child under intermediate */
+        mid->children[diverge_tok] = std::move(child_ptr);
+
+        /* Replace parent's child with intermediate */
+        child_ptr = std::move(mid);
     }
 
-    /* -- Eviction strategies ---------------------------------------- */
+    /* -- Evict one entry according to policy -------------------------- */
 
     bool evict_one() {
         if (all_entries_.empty()) return false;
@@ -280,74 +351,57 @@ private:
         RadixNode* victim = nullptr;
 
         switch (policy_) {
-        case NF_EVICT_TTL:
-            // Evict first expired entry
+        case NF_EVICT_TTL: {
             for (auto* node : all_entries_) {
                 if (node->entry && node->entry->expired()) {
-                    victim = node;
-                    break;
+                    victim = node; break;
                 }
             }
             if (!victim) {
-                // Fall through to LRU if nothing expired
-                [[fallthrough]];
-            } else {
-                break;
+                /* Fall through to LRU if no expired entries */
+                goto lru_fallback;
             }
-
+            break;
+        }
+        lru_fallback:
         case NF_EVICT_LRU: {
-            // Evict least recently accessed (skip pinned: ttl_ms == 0)
-            auto oldest_time = ContextEntry::Clock::time_point::max();
+            ContextEntry::Clock::time_point oldest =
+                ContextEntry::Clock::time_point::max();
             for (auto* node : all_entries_) {
-                if (node->entry && node->entry->ttl_ms != 0 &&
-                    node->entry->last_access < oldest_time) {
-                    oldest_time = node->entry->last_access;
+                if (node->entry && node->entry->last_access < oldest) {
+                    oldest = node->entry->last_access;
                     victim = node;
                 }
             }
-            // If all are pinned, evict the oldest anyway
-            if (!victim && !all_entries_.empty()) {
-                for (auto* node : all_entries_) {
-                    if (node->entry && node->entry->last_access < oldest_time) {
-                        oldest_time = node->entry->last_access;
+            break;
+        }
+        case NF_EVICT_REFCOUNT: {
+            for (auto* node : all_entries_) {
+                if (node->entry && node->entry->tensor.valid()) {
+                    nf_buffer_info bi = node->entry->tensor.info();
+                    if (bi.refcount <= 1) {
+                        victim = node; break;
+                    }
+                }
+            }
+            /* If all entries have external refs, evict LRU */
+            if (!victim) goto lru_fallback;
+            break;
+        }
+        case NF_EVICT_RADIX_PREFIX: {
+            /* Evict entry with longest token sequence (deepest in tree) */
+            size_t max_depth = 0;
+            for (auto* node : all_entries_) {
+                if (node->entry) {
+                    size_t depth = node->entry->token_key.size();
+                    if (depth >= max_depth) {
+                        max_depth = depth;
                         victim = node;
                     }
                 }
             }
             break;
         }
-
-        case NF_EVICT_REFCOUNT:
-            // Evict entries whose tensor has refcount == 1 (only hub holds it)
-            for (auto* node : all_entries_) {
-                if (node->entry && node->entry->tensor.valid()) {
-                    auto bi = node->entry->tensor.info();
-                    if (bi.refcount <= 1) {
-                        victim = node;
-                        break;
-                    }
-                }
-            }
-            break;
-
-        case NF_EVICT_RADIX_PREFIX:
-            // Evict the entry with the longest key (deepest in trie)
-            // This preferentially removes fine-grained slices first
-            {
-                size_t max_depth = 0;
-                for (auto* node : all_entries_) {
-                    if (node->entry) {
-                        size_t depth = std::count(
-                            node->entry->key.begin(),
-                            node->entry->key.end(), '/');
-                        if (depth >= max_depth) {
-                            max_depth = depth;
-                            victim = node;
-                        }
-                    }
-                }
-            }
-            break;
         }
 
         if (!victim || !victim->entry) return false;
@@ -360,7 +414,7 @@ private:
         return true;
     }
 
-    /* -- Subtree reclamation ---------------------------------------- */
+    /* -- Subtree reclamation ------------------------------------------ */
 
     void reclaim_subtree(RadixNode* node) {
         if (!node) return;
@@ -371,20 +425,20 @@ private:
                 all_entries_.end());
             node->entry.reset();
         }
-        for (auto& [seg, child] : node->children) {
+        for (auto& [tok, child] : node->children) {
             reclaim_subtree(child.get());
         }
         node->children.clear();
     }
 
-    /* -- State ------------------------------------------------------ */
+    /* -- State -------------------------------------------------------- */
 
     std::unique_ptr<RadixNode>      root_;
-    std::vector<RadixNode*>         all_entries_;  /**< Flat index for eviction scan */
+    std::vector<RadixNode*>         all_entries_;
     uint64_t                        budget_;
     uint64_t                        used_;
     nf_eviction_policy              policy_;
-    mutable std::mutex              mu_;
+    mutable std::shared_mutex       mu_;
 };
 
 } // namespace nf

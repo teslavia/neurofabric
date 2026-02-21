@@ -28,6 +28,7 @@
 
 #include "neurofabric/neuro_scheduler_abi.h"
 #include "neurofabric/TensorView.hpp"
+#include "neurofabric/ProfileTrace.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -124,6 +125,9 @@ struct TaskNode {
     /* Result */
     std::atomic<nf_status>  result{NF_OK};
     bool                    dispatched = false;
+
+    /* Profiling (always populated; near-zero cost — 3 clock reads per task) */
+    TaskProfile             profile{};
 };
 
 /* ================================================================== */
@@ -173,6 +177,19 @@ public:
         if (idx < providers_.size()) {
             providers_[idx].mem_vt = mem_vt;
         }
+    }
+
+    /* -- Profiling Access ------------------------------------------- */
+
+    /**
+     * Retrieve the profile for a submitted graph.
+     * Returns nullptr if graph_id not found or not yet submitted.
+     */
+    std::shared_ptr<const GraphProfile> graph_profile(uint32_t gid) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = profiles_.find(gid);
+        if (it == profiles_.end()) return nullptr;
+        return it->second;
     }
 
     /* -- Graph Building --------------------------------------------- */
@@ -259,6 +276,14 @@ public:
         auto graph_promise = std::make_shared<std::promise<nf_status>>();
         auto graph_future = graph_promise->get_future();
 
+        // Profiling: shared GraphProfile for this submission
+        auto profile = std::make_shared<GraphProfile>();
+        profile->t_submit = SteadyClock::now();
+        profile->tasks.resize(total);
+        for (size_t i = 0; i < total; ++i) {
+            profile->tasks[i].task_id = static_cast<uint32_t>(i);
+        }
+
         // Capture node pointers (shared ownership for async lifetime)
         auto nodes = std::make_shared<std::vector<std::unique_ptr<TaskNode>>>(
             std::move(g.nodes));
@@ -272,9 +297,15 @@ public:
         }
 
         // Dispatch all initially-ready tasks
+        auto now = SteadyClock::now();
         for (uint32_t tid : ready) {
-            dispatch_task(nodes, tid, remaining, graph_error, graph_promise);
+            profile->tasks[tid].t_enqueue = now;
+            dispatch_task(nodes, tid, remaining, graph_error,
+                          graph_promise, profile);
         }
+
+        // Store profile for later retrieval (already under mu_)
+        profiles_[gid] = profile;
 
         return graph_future;
     }
@@ -317,25 +348,27 @@ private:
         uint32_t tid,
         std::shared_ptr<std::atomic<uint32_t>> remaining,
         std::shared_ptr<std::atomic<nf_status>> graph_error,
-        std::shared_ptr<std::promise<nf_status>> graph_promise)
+        std::shared_ptr<std::promise<nf_status>> graph_promise,
+        std::shared_ptr<GraphProfile> profile = nullptr)
     {
         auto& node = (*nodes)[tid];
         ProviderSlot* prov = find_provider(node->desc.affinity,
                                            node->desc.flags);
 
         pool_.submit([this, nodes, tid, remaining, graph_error,
-                      graph_promise, prov]() -> nf_status {
+                      graph_promise, prov, profile]() -> nf_status {
             auto& node = (*nodes)[tid];
             nf_status st = NF_OK;
 
+            // Profiling: record op_name + dispatch start
+            if (profile) {
+                auto& tp = profile->tasks[tid];
+                std::strncpy(tp.op_name, node->desc.op_name, 63);
+                tp.op_name[63] = '\0';
+                tp.t_start = SteadyClock::now();
+            }
+
             if (prov && prov->vtable.dispatch) {
-                /*
-                 * Set user_data to point to the full task descriptor.
-                 * The network plugin reads this to access buffer_ops
-                 * (input_ops/output_ops) for zero-copy tensor transport.
-                 * This bridges the Phase 1 C-ABI dispatch signature
-                 * (which lacks ops) with the Phase 5 payload path.
-                 */
                 node->desc.user_data = &node->desc;
 
                 st = prov->vtable.dispatch(
@@ -345,6 +378,11 @@ private:
                     node->desc.outputs, node->desc.n_outputs);
 
                 node->desc.user_data = nullptr;
+            }
+
+            // Profiling: record dispatch end
+            if (profile) {
+                profile->tasks[tid].t_end = SteadyClock::now();
             }
 
             node->result.store(st, std::memory_order_release);
@@ -359,9 +397,13 @@ private:
                 uint32_t prev = succ->in_degree.fetch_sub(
                     1, std::memory_order_acq_rel);
                 if (prev == 1) {
-                    // Successor is now ready — dispatch it
+                    // Stamp successor enqueue time
+                    if (profile) {
+                        profile->tasks[succ_id].t_enqueue =
+                            SteadyClock::now();
+                    }
                     dispatch_task(nodes, succ_id, remaining,
-                                  graph_error, graph_promise);
+                                  graph_error, graph_promise, profile);
                 }
             }
 
@@ -385,9 +427,11 @@ private:
     };
 
     ThreadPool                                  pool_;
-    std::mutex                                  mu_;
+    mutable std::mutex                          mu_;
     std::vector<ProviderSlot>                   providers_;
     std::unordered_map<uint32_t, GraphState>    graphs_;
+    std::unordered_map<uint32_t,
+        std::shared_ptr<GraphProfile>>          profiles_;
     uint32_t                                    next_graph_id_ = 0;
 };
 
