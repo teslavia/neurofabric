@@ -16,7 +16,6 @@
 #include "neurofabric/GraphBuilder.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +23,10 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
 
 /* ================================================================== */
 /*  Host Buffer — simple malloc-backed activation allocator            */
@@ -262,7 +265,7 @@ static void generate_nfir(const char* path) {
 
     /* Write file */
     int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    assert(fd >= 0);
+    CHECK(fd >= 0);
 
     ::write(fd, &hdr, sizeof(hdr));
     ::write(fd, tensors, sizeof(tensors));
@@ -300,18 +303,18 @@ static void test_ir_load_and_execute() {
     /* 3. Load and build via GraphBuilder */
     nf::GraphBuilder builder(engine, host_alloc_fn);
     nf_status st = builder.load(path);
-    assert(st == NF_OK);
+    CHECK(st == NF_OK);
     std::printf("    [load] IR loaded OK\n");
 
     uint32_t graph_id;
     st = builder.build(&graph_id);
-    assert(st == NF_OK);
+    CHECK(st == NF_OK);
     std::printf("    [build] DAG built, graph_id=%u\n", graph_id);
 
     /* 4. Fill activation input (tensor 1) with test pattern */
     nf_buffer input_buf = builder.get_tensor_buffer(1);
     nf_buffer_ops input_ops = builder.get_tensor_ops(1);
-    assert(input_buf);
+    CHECK(input_buf);
 
     void* input_ptr = nullptr;
     input_ops.map(input_buf, &input_ptr);
@@ -323,13 +326,13 @@ static void test_ir_load_and_execute() {
     /* 5. Submit and wait */
     auto future = engine.submit(graph_id);
     st = future.get();
-    assert(st == NF_OK);
+    CHECK(st == NF_OK);
     std::printf("    [exec] DAG completed OK\n");
 
     /* 6. Verify bit-exact output */
     nf_buffer output_buf = builder.get_tensor_buffer(2);
     nf_buffer_ops output_ops = builder.get_tensor_ops(2);
-    assert(output_buf);
+    CHECK(output_buf);
 
     void* output_ptr = nullptr;
     output_ops.map(output_buf, &output_ptr);
@@ -350,17 +353,17 @@ static void test_ir_load_and_execute() {
         }
     }
     output_ops.unmap(output_buf);
-    assert(mismatches == 0);
+    CHECK(mismatches == 0);
     std::printf("    [verify] %u floats bit-exact match\n", N_FLOATS);
 
     /* 7. Verify mmap domain on weight buffer */
     nf_buffer weight_buf = builder.get_tensor_buffer(0);
     nf_buffer_ops weight_ops = builder.get_tensor_ops(0);
-    assert(weight_buf);
+    CHECK(weight_buf);
 
     nf_buffer_info w_info{};
     weight_ops.get_info(weight_buf, &w_info);
-    assert(w_info.domain == NF_MEM_DOMAIN_MMAP);
+    CHECK(w_info.domain == NF_MEM_DOMAIN_MMAP);
     std::printf("    [verify] weight domain = MMAP (%d)\n", w_info.domain);
 
     /* 8. Cleanup */

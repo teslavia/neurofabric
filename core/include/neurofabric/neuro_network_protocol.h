@@ -247,6 +247,14 @@ typedef struct nf_xfer_progress {
 } nf_xfer_progress;
 
 #ifdef __cplusplus
+static_assert(sizeof(nf_xfer_progress) == 32,
+    "ABI break: nf_xfer_progress size changed");
+#else
+_Static_assert(sizeof(nf_xfer_progress) == 32,
+    "ABI break: nf_xfer_progress size changed");
+#endif
+
+#ifdef __cplusplus
 }
 #endif
 

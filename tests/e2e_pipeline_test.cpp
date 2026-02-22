@@ -26,13 +26,16 @@
 #include "neurofabric/PipelineEngine.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <thread>
+
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
 #include <vector>
 
 /* POSIX sockets */
@@ -273,7 +276,7 @@ done:
 static std::unique_ptr<LoopbackServer> start_server() {
     auto srv = std::make_unique<LoopbackServer>();
     srv->listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(srv->listen_fd >= 0);
+    CHECK(srv->listen_fd >= 0);
 
     int opt = 1;
     ::setsockopt(srv->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -283,14 +286,14 @@ static std::unique_ptr<LoopbackServer> start_server() {
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0; /* OS picks a free port */
 
-    assert(::bind(srv->listen_fd, reinterpret_cast<struct sockaddr*>(&addr),
+    CHECK(::bind(srv->listen_fd, reinterpret_cast<struct sockaddr*>(&addr),
                   sizeof(addr)) == 0);
 
     socklen_t alen = sizeof(addr);
     ::getsockname(srv->listen_fd, reinterpret_cast<struct sockaddr*>(&addr), &alen);
     srv->port = ntohs(addr.sin_port);
 
-    assert(::listen(srv->listen_fd, 1) == 0);
+    CHECK(::listen(srv->listen_fd, 1) == 0);
 
     srv->running.store(true, std::memory_order_release);
     srv->thread = std::thread(server_loop, srv.get());
@@ -315,7 +318,7 @@ struct NetClient {
 static NetClient connect_to(uint16_t port) {
     NetClient nc;
     nc.sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(nc.sock >= 0);
+    CHECK(nc.sock >= 0);
 
     int flag = 1;
     ::setsockopt(nc.sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
@@ -327,7 +330,7 @@ static NetClient connect_to(uint16_t port) {
 
     int r = ::connect(nc.sock, reinterpret_cast<struct sockaddr*>(&addr),
                       sizeof(addr));
-    assert(r == 0);
+    CHECK(r == 0);
     return nc;
 }
 
@@ -382,21 +385,21 @@ static void test_local_dag() {
 
     auto fut = engine.submit(gid);
     nf_status result = fut.get();
-    assert(result == NF_OK);
+    CHECK(result == NF_OK);
 
     /* Verify: gen_out has pattern [0, -1, 2, -3] */
     auto* gen_fp = static_cast<float*>(gen_out->data);
-    assert(gen_fp[0] == 0.0f);
-    assert(gen_fp[1] == -1.0f);
-    assert(gen_fp[2] == 2.0f);
-    assert(gen_fp[3] == -3.0f);
+    CHECK(gen_fp[0] == 0.0f);
+    CHECK(gen_fp[1] == -1.0f);
+    CHECK(gen_fp[2] == 2.0f);
+    CHECK(gen_fp[3] == -3.0f);
 
     /* Verify: relu_out has [0, 0, 2, 0] */
     auto* relu_fp = static_cast<float*>(relu_out->data);
-    assert(relu_fp[0] == 0.0f);
-    assert(relu_fp[1] == 0.0f);
-    assert(relu_fp[2] == 2.0f);
-    assert(relu_fp[3] == 0.0f);
+    CHECK(relu_fp[0] == 0.0f);
+    CHECK(relu_fp[1] == 0.0f);
+    CHECK(relu_fp[2] == 2.0f);
+    CHECK(relu_fp[3] == 0.0f);
 
     ops.release(reinterpret_cast<nf_buffer>(gen_out));
     ops.release(reinterpret_cast<nf_buffer>(relu_out));
@@ -468,27 +471,27 @@ static void test_e2e_network_loopback() {
     hdr.header_crc32 = nf_htole32(nf_frame_compute_crc(&hdr));
 
     /* Send header + wire descriptor + payload */
-    assert(send_all_s(client.sock, &hdr, sizeof(hdr)));
-    assert(send_all_s(client.sock, &wire, sizeof(wire)));
-    assert(send_all_s(client.sock, send_buf->data, desc.size_bytes));
+    CHECK(send_all_s(client.sock, &hdr, sizeof(hdr)));
+    CHECK(send_all_s(client.sock, &wire, sizeof(wire)));
+    CHECK(send_all_s(client.sock, send_buf->data, desc.size_bytes));
     std::printf("  [client] sent %zu bytes tensor payload\n", (size_t)desc.size_bytes);
 
     /* ---- Receive response ---- */
     nf_frame_header resp{};
-    assert(recv_all_s(client.sock, &resp, sizeof(resp)));
-    assert(nf_le32toh(resp.magic) == NF_PROTO_MAGIC);
-    assert(resp.opcode == NF_OP_TASK_COMPLETE);
-    assert(nf_le64toh(resp.task_id) == 42);
-    assert(resp.n_output_tensors == 1);
+    CHECK(recv_all_s(client.sock, &resp, sizeof(resp)));
+    CHECK(nf_le32toh(resp.magic) == NF_PROTO_MAGIC);
+    CHECK(resp.opcode == NF_OP_TASK_COMPLETE);
+    CHECK(nf_le64toh(resp.task_id) == 42);
+    CHECK(resp.n_output_tensors == 1);
 
     nf_tensor_wire out_wire{};
-    assert(recv_all_s(client.sock, &out_wire, sizeof(out_wire)));
+    CHECK(recv_all_s(client.sock, &out_wire, sizeof(out_wire)));
 
     uint64_t result_bytes = nf_le64toh(out_wire.payload_bytes);
-    assert(result_bytes == desc.size_bytes);
+    CHECK(result_bytes == desc.size_bytes);
 
     std::vector<float> received(n_floats);
-    assert(recv_all_s(client.sock, received.data(), static_cast<size_t>(result_bytes)));
+    CHECK(recv_all_s(client.sock, received.data(), static_cast<size_t>(result_bytes)));
     std::printf("  [client] received %zu bytes result payload\n", (size_t)result_bytes);
 
     /* ---- Bit-exact verification ---- */
@@ -502,7 +505,7 @@ static void test_e2e_network_loopback() {
             ++mismatches;
         }
     }
-    assert(mismatches == 0);
+    CHECK(mismatches == 0);
     std::printf("  [verify] %zu floats bit-exact match ✓\n", n_floats);
 
     /* ---- Cleanup ---- */

@@ -18,7 +18,6 @@
 #include "neurofabric/GraphBuilder.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +26,10 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
 
 /* ================================================================== */
 /*  Host Buffer — malloc-backed activation allocator                   */
@@ -261,7 +264,7 @@ static void generate_nfir(const char* path) {
 
     /* Write file */
     int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    assert(fd >= 0);
+    CHECK(fd >= 0);
 
     ::write(fd, &hdr, sizeof(hdr));
     ::write(fd, tensors, sizeof(tensors));
@@ -304,18 +307,18 @@ static void test_nfir_e2e(const char* nfir_path) {
     std::printf("  [3/6] Loading .nfir via GraphBuilder\n");
     nf::GraphBuilder builder(engine, host_alloc_fn);
     nf_status st = builder.load(path);
-    assert(st == NF_OK && "GraphBuilder::load failed");
+    CHECK(st == NF_OK && "GraphBuilder::load failed");
 
     uint32_t graph_id;
     st = builder.build(&graph_id);
-    assert(st == NF_OK && "GraphBuilder::build failed");
+    CHECK(st == NF_OK && "GraphBuilder::build failed");
     std::printf("    graph_id=%u\n", graph_id);
 
     /* 4. Fill activation input (tensor 1) */
     std::printf("  [4/6] Filling activation input\n");
     nf_buffer input_buf = builder.get_tensor_buffer(1);
     nf_buffer_ops input_ops = builder.get_tensor_ops(1);
-    assert(input_buf && "tensor 1 buffer is null");
+    CHECK(input_buf && "tensor 1 buffer is null");
 
     void* input_ptr = nullptr;
     input_ops.map(input_buf, &input_ptr);
@@ -328,7 +331,7 @@ static void test_nfir_e2e(const char* nfir_path) {
     std::printf("  [5/6] Executing DAG\n");
     auto future = engine.submit(graph_id);
     st = future.get();
-    assert(st == NF_OK && "DAG execution failed");
+    CHECK(st == NF_OK && "DAG execution failed");
 
     /* 6. Verify bit-exact output */
     std::printf("  [6/6] Verifying output\n");
@@ -341,7 +344,7 @@ static void test_nfir_e2e(const char* nfir_path) {
      */
     nf_buffer output_buf = builder.get_tensor_buffer(3);
     nf_buffer_ops output_ops = builder.get_tensor_ops(3);
-    assert(output_buf && "tensor 3 buffer is null");
+    CHECK(output_buf && "tensor 3 buffer is null");
 
     void* output_ptr = nullptr;
     output_ops.map(output_buf, &output_ptr);
@@ -358,20 +361,20 @@ static void test_nfir_e2e(const char* nfir_path) {
         }
     }
     output_ops.unmap(output_buf);
-    assert(mismatches == 0 && "output verification failed");
+    CHECK(mismatches == 0 && "output verification failed");
     std::printf("    [verify] %u floats bit-exact ✓\n", N_FLOATS);
 
     /* Verify mid tensor (T2) also correct */
     nf_buffer mid_buf = builder.get_tensor_buffer(2);
     nf_buffer_ops mid_ops = builder.get_tensor_ops(2);
-    assert(mid_buf);
+    CHECK(mid_buf);
 
     void* mid_ptr = nullptr;
     mid_ops.map(mid_buf, &mid_ptr);
     auto* mid = static_cast<const float*>(mid_ptr);
     for (uint32_t i = 0; i < N_FLOATS; ++i) {
         float expected = static_cast<float>(i) * 0.05f;
-        assert(std::memcmp(&mid[i], &expected, sizeof(float)) == 0);
+        CHECK(std::memcmp(&mid[i], &expected, sizeof(float)) == 0);
     }
     mid_ops.unmap(mid_buf);
     std::printf("    [verify] mid tensor (T2) bit-exact ✓\n");
@@ -379,11 +382,11 @@ static void test_nfir_e2e(const char* nfir_path) {
     /* Verify weight domain == MMAP */
     nf_buffer weight_buf = builder.get_tensor_buffer(0);
     nf_buffer_ops weight_ops = builder.get_tensor_ops(0);
-    assert(weight_buf);
+    CHECK(weight_buf);
 
     nf_buffer_info w_info{};
     weight_ops.get_info(weight_buf, &w_info);
-    assert(w_info.domain == NF_MEM_DOMAIN_MMAP);
+    CHECK(w_info.domain == NF_MEM_DOMAIN_MMAP);
     std::printf("    [verify] weight domain = MMAP (%d) ✓\n", w_info.domain);
 
     /* Cleanup */

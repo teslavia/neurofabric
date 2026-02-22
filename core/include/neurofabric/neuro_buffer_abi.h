@@ -88,6 +88,14 @@ typedef struct nf_buffer_info {
     uint32_t        _reserved;
 } nf_buffer_info;
 
+#ifdef __cplusplus
+static_assert(sizeof(nf_buffer_info) == 176,
+    "ABI break: nf_buffer_info size changed");
+#else
+_Static_assert(sizeof(nf_buffer_info) == 176,
+    "ABI break: nf_buffer_info size changed");
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  4. Buffer Operations VTable (Struct of Function Pointers)          */
 /*     The plugin that OWNS a buffer fills this table at alloc time.   */
@@ -196,6 +204,14 @@ typedef struct nf_buffer_alloc_request {
     uint32_t        flags;          /**< Reserved for alignment hints etc */
     uint32_t        _reserved;
 } nf_buffer_alloc_request;
+
+#ifdef __cplusplus
+static_assert(sizeof(nf_buffer_alloc_request) == 160,
+    "ABI break: nf_buffer_alloc_request size changed");
+#else
+_Static_assert(sizeof(nf_buffer_alloc_request) == 160,
+    "ABI break: nf_buffer_alloc_request size changed");
+#endif
 
 /** Usage flag: buffer wraps mmap'd read-only weight data. */
 #define NF_BUFFER_USAGE_WEIGHT_MMAP  0x01u

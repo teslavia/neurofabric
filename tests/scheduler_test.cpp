@@ -9,10 +9,13 @@
 
 #include "neurofabric/PipelineEngine.hpp"
 #include "neurofabric/ContextHub.hpp"
-#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
 
 /* ================================================================== */
 /*  Mock Provider for DAG dispatch testing                             */
@@ -167,8 +170,8 @@ static void test_dag_topo_sort() {
     auto fut = engine.submit(gid);
     nf_status result = fut.get();
 
-    assert(result == NF_OK);
-    assert(g_dispatch_count.load() == 4);
+    CHECK(result == NF_OK);
+    CHECK(g_dispatch_count.load() == 4);
 
     // Verify ordering: task_0 must have dispatched before task_3
     // (task_0 is always first since it's the only root)
@@ -176,10 +179,10 @@ static void test_dag_topo_sort() {
     for (int i = 0; i < 4; ++i) {
         order[i] = g_dispatch_order[i].load(std::memory_order_relaxed);
     }
-    assert(order[0] == 0);  // task_0 is always first
+    CHECK(order[0] == 0);  // task_0 is always first
 
     // task_3 must be last
-    assert(order[3] == 3);
+    CHECK(order[3] == 3);
 
     engine.destroy_graph(gid);
     std::printf("  PASS: DAG topological sort (diamond)\n");
@@ -216,12 +219,12 @@ static void test_linear_chain() {
     g_order_idx.store(0);
 
     auto fut = engine.submit(gid);
-    assert(fut.get() == NF_OK);
-    assert(g_dispatch_count.load() == 3);
+    CHECK(fut.get() == NF_OK);
+    CHECK(g_dispatch_count.load() == 3);
 
     // Strict order: 0, 1, 2
     for (int i = 0; i < 3; ++i) {
-        assert(g_dispatch_order[i].load() == i);
+        CHECK(g_dispatch_order[i].load() == i);
     }
 
     engine.destroy_graph(gid);
@@ -242,35 +245,35 @@ static void test_context_hub_basic() {
     // Token keys: [10,20,30,40] and [10,20,30,50]
     std::vector<int32_t> key1 = {10, 20, 30, 40};
     auto st = hub.put(key1, "planner_agent", std::move(tv1), 0, 1);
-    assert(st == NF_OK);
+    CHECK(st == NF_OK);
 
     auto [buf2, ops2] = make_mock_tensor(2048);
     nf::TensorView tv2(buf2, ops2);
 
     std::vector<int32_t> key2 = {10, 20, 30, 50};
     st = hub.put(key2, "planner_agent", std::move(tv2), 0, 2);
-    assert(st == NF_OK);
+    CHECK(st == NF_OK);
 
     // Exact match
     auto r1 = hub.get(std::span<const int32_t>(key1));
-    assert(r1.found);
-    assert(r1.match_len == 4);
+    CHECK(r1.found);
+    CHECK(r1.match_len == 4);
 
     // Prefix match: [10,20,30,50,60] should match key2 (len 4)
     std::vector<int32_t> longer = {10, 20, 30, 50, 60};
     auto r2 = hub.get(std::span<const int32_t>(longer));
-    assert(r2.found);
-    assert(r2.match_len == 4);
+    CHECK(r2.found);
+    CHECK(r2.match_len == 4);
 
     // No match
     std::vector<int32_t> miss = {99, 88, 77};
     auto r3 = hub.get(std::span<const int32_t>(miss));
-    assert(!r3.found);
+    CHECK(!r3.found);
 
     // Stats
     auto s = hub.stats();
-    assert(s.entry_count == 2);
-    assert(s.used_bytes == 4096 + 2048);
+    CHECK(s.entry_count == 2);
+    CHECK(s.used_bytes == 4096 + 2048);
 
     std::printf("  PASS: ContextHub basic put/get/prefix\n");
 }
@@ -290,13 +293,13 @@ static void test_context_hub_eviction() {
         std::vector<int32_t> key = {100, static_cast<int32_t>(i)};
         // ttl_ms = 1000 so they're evictable (not pinned)
         auto st = hub.put(key, "test", std::move(tv), 1000, i);
-        assert(st == NF_OK);
+        CHECK(st == NF_OK);
     }
 
     auto s = hub.stats();
     // Budget is 8192, each entry is 4096, so max 2 entries
-    assert(s.entry_count == 2);
-    assert(s.used_bytes <= 8192);
+    CHECK(s.entry_count == 2);
+    CHECK(s.used_bytes <= 8192);
 
     std::printf("  PASS: ContextHub eviction under pressure\n");
 }
@@ -316,17 +319,17 @@ static void test_context_hub_evict_prefix() {
     std::vector<int32_t> key_b = {4, 5, 6};
     hub.put(key_b, "b", nf::TensorView(b2, o2), 0, 0);
 
-    assert(hub.stats().entry_count == 2);
+    CHECK(hub.stats().entry_count == 2);
 
     // Evict only key_a subtree
     hub.evict(std::span<const int32_t>(key_a));
-    assert(hub.stats().entry_count == 1);
+    CHECK(hub.stats().entry_count == 1);
 
     auto r = hub.get(std::span<const int32_t>(key_a));
-    assert(!r.found);
+    CHECK(!r.found);
 
     r = hub.get(std::span<const int32_t>(key_b));
-    assert(r.found);
+    CHECK(r.found);
 
     std::printf("  PASS: ContextHub evict by prefix\n");
 }

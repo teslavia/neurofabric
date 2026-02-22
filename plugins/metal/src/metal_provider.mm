@@ -38,6 +38,9 @@ static NSString* const kShaderSource = @R"(
 #include <metal_stdlib>
 using namespace metal;
 
+constant float NF_NEG_INF = -1e30f;
+constant uint NF_MAX_HEAD_DIM = 128;
+
 kernel void vector_add(device const float* a [[buffer(0)]],
                        device const float* b [[buffer(1)]],
                        device float* out     [[buffer(2)]],
@@ -174,7 +177,7 @@ kernel void causal_attention(device const float* Q [[buffer(0)]],
     float scale = rsqrt(float(dim));
 
     /* Compute attention scores for this query position */
-    float max_score = -1e30f;
+    float max_score = NF_NEG_INF;
     for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
         float dot = 0.0f;
         for (uint d = 0; d < dim; ++d)
@@ -248,7 +251,7 @@ kernel void causal_attention_cached(
 
         /* Causal attention with optional sliding window */
         float scale = rsqrt(float(dim));
-        float max_score = -1e30f;
+        float max_score = NF_NEG_INF;
         for (uint k_pos = kv_start; k_pos <= q_pos; ++k_pos) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
@@ -298,7 +301,7 @@ kernel void causal_attention_cached(
     if (pc.window_size > 0 && step >= pc.window_size)
         kv_start = step - pc.window_size + 1;
 
-    float max_score = -1e30f;
+    float max_score = NF_NEG_INF;
     for (uint k_pos = kv_start; k_pos <= step; ++k_pos) {
         float dot = 0.0f;
         for (uint d = 0; d < dim; ++d)
@@ -372,12 +375,12 @@ kernel void flash_attention_tiled(
 
         /* Online softmax attention over cache[0..q_pos] */
         float scale = rsqrt(float(dim));
-        float m = -1e30f;  /* running max */
+        float m = NF_NEG_INF;  /* running max */
         float l = 0.0f;    /* running sum of exp */
 
         /* Accumulator for output (dim floats) — stored in registers */
         /* For head_dim up to 128, this fits in registers on Apple GPUs */
-        float acc[128];
+        float acc[NF_MAX_HEAD_DIM];
         for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
 
         /* Determine attention window */
@@ -392,7 +395,7 @@ kernel void flash_attention_tiled(
             uint t_end = min(t_start + FA_TILE_KV - 1, kv_end);
 
             /* Compute scores for this tile */
-            float tile_max = -1e30f;
+            float tile_max = NF_NEG_INF;
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
@@ -446,9 +449,9 @@ kernel void flash_attention_tiled(
 
     /* Online softmax attention over cache[kv_start..step] */
     float scale = rsqrt(float(dim));
-    float m_val = -1e30f;
+    float m_val = NF_NEG_INF;
     float l_val = 0.0f;
-    float acc[128];
+    float acc[NF_MAX_HEAD_DIM];
     for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
 
     uint kv_start = 0;
@@ -458,7 +461,7 @@ kernel void flash_attention_tiled(
     for (uint t_start = kv_start; t_start <= step; t_start += FA_TILE_KV) {
         uint t_end = min(t_start + FA_TILE_KV - 1, step);
 
-        float tile_max = -1e30f;
+        float tile_max = NF_NEG_INF;
         for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
@@ -1280,9 +1283,9 @@ kernel void flash_attention_tiled_f16(
             }
         }
         float scale = rsqrt(float(dim));
-        float m = -1e30f;
+        float m = NF_NEG_INF;
         float l = 0.0f;
-        float acc[128];
+        float acc[NF_MAX_HEAD_DIM];
         for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
         uint kv_start = 0;
         if (pc.window_size > 0 && q_pos >= pc.window_size)
@@ -1290,7 +1293,7 @@ kernel void flash_attention_tiled_f16(
         uint kv_end = q_pos;
         for (uint t_start = kv_start; t_start <= kv_end; t_start += FA_TILE_KV) {
             uint t_end = min(t_start + FA_TILE_KV - 1, kv_end);
-            float tile_max = -1e30f;
+            float tile_max = NF_NEG_INF;
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
@@ -1331,16 +1334,16 @@ kernel void flash_attention_tiled_f16(
         }
     }
     float scale = rsqrt(float(dim));
-    float m_val = -1e30f;
+    float m_val = NF_NEG_INF;
     float l_val = 0.0f;
-    float acc[128];
+    float acc[NF_MAX_HEAD_DIM];
     for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
     uint kv_start = 0;
     if (pc.window_size > 0 && step >= pc.window_size)
         kv_start = step - pc.window_size + 1;
     for (uint t_start = kv_start; t_start <= step; t_start += FA_TILE_KV) {
         uint t_end = min(t_start + FA_TILE_KV - 1, step);
-        float tile_max = -1e30f;
+        float tile_max = NF_NEG_INF;
         for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
@@ -1498,9 +1501,9 @@ kernel void flash_attention_paged(
     }
 
     float scale = rsqrt(float(dim));
-    float m_prev = -1e30f;
+    float m_prev = NF_NEG_INF;
     float l_prev = 0.0f;
-    float acc[128];
+    float acc[NF_MAX_HEAD_DIM];
     for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
 
     /* seq_offset stored in pc.K field for batched queries */
@@ -1522,7 +1525,7 @@ kernel void flash_attention_paged(
         uint t_count = t_end - t_start + 1;
 
         /* Tile: compute scores, find tile max */
-        float tile_max = -1e30f;
+        float tile_max = NF_NEG_INF;
         for (uint t = 0; t < t_count; ++t) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)

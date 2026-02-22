@@ -125,6 +125,14 @@ typedef struct nf_tensor_desc {
     uint64_t  size_bytes;
 } nf_tensor_desc;
 
+#ifdef __cplusplus
+static_assert(sizeof(nf_tensor_desc) == 144,
+    "ABI break: nf_tensor_desc size changed");
+#else
+_Static_assert(sizeof(nf_tensor_desc) == 144,
+    "ABI break: nf_tensor_desc size changed");
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  6. Execution Provider VTable (Struct of Function Pointers)         */
 /*     This IS the plugin contract. Every execution provider (Metal,   */

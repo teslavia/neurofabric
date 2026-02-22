@@ -23,7 +23,6 @@
 #include "neurofabric/TensorView.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -32,6 +31,10 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#define CHECK(expr) do { if (!(expr)) { \
+    std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \
+    std::abort(); } } while(0)
 
 /* POSIX sockets */
 #include <arpa/inet.h>
@@ -159,7 +162,7 @@ struct LoopbackServer {
 static LoopbackServer start_server(uint16_t port_hint) {
     LoopbackServer srv;
     srv.listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(srv.listen_fd >= 0);
+    CHECK(srv.listen_fd >= 0);
     int opt = 1;
     setsockopt(srv.listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -168,7 +171,7 @@ static LoopbackServer start_server(uint16_t port_hint) {
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(port_hint);
     int rc = ::bind(srv.listen_fd, (struct sockaddr*)&addr, sizeof(addr));
-    assert(rc == 0);
+    CHECK(rc == 0);
     ::listen(srv.listen_fd, 1);
 
     /* Retrieve actual port */
@@ -254,11 +257,11 @@ static void test_split_inference() {
 
     srv.thread = std::thread([&] {
         int client = ::accept(srv.listen_fd, nullptr, nullptr);
-        assert(client >= 0);
+        CHECK(client >= 0);
 
         /* Receive tensor wire descriptor */
         nf_tensor_wire wire{};
-        assert(recv_all_s(client, &wire, sizeof(wire)));
+        CHECK(recv_all_s(client, &wire, sizeof(wire)));
         uint64_t payload = nf_le64toh(wire.payload_bytes);
         uint16_t layout  = nf_le16toh(wire.layout);
         std::printf("    [server] received wire: %llu bytes, layout=%u\n",
@@ -266,11 +269,11 @@ static void test_split_inference() {
 
         /* Receive tensor payload */
         std::vector<float> k_data(n_floats);
-        assert(recv_all_s(client, k_data.data(), tensor_bytes));
+        CHECK(recv_all_s(client, k_data.data(), tensor_bytes));
         std::printf("    [server] received %zu float payload\n", n_floats);
 
         /* Verify layout tag was transmitted */
-        assert(layout == NF_LAYOUT_NCHW);
+        CHECK(layout == NF_LAYOUT_NCHW);
 
         /* ---- ContextHub: insert K_Cache ---- */
         nf_tensor_desc recv_desc = desc;
@@ -284,13 +287,13 @@ static void test_split_inference() {
         std::vector<int32_t> kv_tokens = {100, 200, 300, 400};
         auto st = hub.put(kv_tokens, "test_agent",
                           k_view.share(), 0, 1);
-        assert(st == NF_OK);
+        CHECK(st == NF_OK);
         std::printf("    [server] ContextHub: inserted K_Cache\n");
 
         /* ---- ContextHub: lookup by prefix ---- */
         auto found = hub.get(std::span<const int32_t>(kv_tokens));
-        assert(found.found);
-        assert(found.match_len == 4);
+        CHECK(found.found);
+        CHECK(found.match_len == 4);
         std::printf("    [server] ContextHub: found K via prefix lookup\n");
 
         /* ---- Decode step: output[i] = tanh(K[i]) ---- */
@@ -303,8 +306,8 @@ static void test_split_inference() {
         auto stats = hub.stats();
         std::printf("    [server] ContextHub: used=%llu bytes, entries=%u\n",
                     (unsigned long long)stats.used_bytes, stats.entry_count);
-        assert(stats.entry_count == 1);
-        assert(stats.used_bytes == tensor_bytes);
+        CHECK(stats.entry_count == 1);
+        CHECK(stats.used_bytes == tensor_bytes);
 
         /* ---- Send result back ---- */
         /* Send wire descriptor for result */
@@ -317,15 +320,15 @@ static void test_split_inference() {
             result_wire.shape[d] = nf_htole64(desc.shape[d]);
         }
         result_wire.payload_bytes = nf_htole64(tensor_bytes);
-        assert(send_all_s(client, &result_wire, sizeof(result_wire)));
-        assert(send_all_s(client, server_result.data(), tensor_bytes));
+        CHECK(send_all_s(client, &result_wire, sizeof(result_wire)));
+        CHECK(send_all_s(client, server_result.data(), tensor_bytes));
         std::printf("    [server] sent %zu bytes result\n", tensor_bytes);
 
         /* ---- Evict all and verify ---- */
         hub.evict();
         auto stats2 = hub.stats();
-        assert(stats2.used_bytes == 0);
-        assert(stats2.entry_count == 0);
+        CHECK(stats2.used_bytes == 0);
+        CHECK(stats2.entry_count == 0);
         std::printf("    [server] ContextHub: evicted all, used=0 ✓\n");
 
         ::close(client);
@@ -341,17 +344,17 @@ static void test_split_inference() {
     auto t1 = std::chrono::steady_clock::now();
     auto fence_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::printf("    [client] GPU fence waited %lld ms\n", (long long)fence_ms);
-    assert(fence_ms >= 5); /* GPU thread sleeps 10ms, should be >= 5 */
+    CHECK(fence_ms >= 5); /* GPU thread sleeps 10ms, should be >= 5 */
 
     /* Connect to server */
     int client_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    assert(client_fd >= 0);
+    CHECK(client_fd >= 0);
     struct sockaddr_in saddr{};
     saddr.sin_family = AF_INET;
     saddr.sin_port = htons(srv.port);
     saddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     int rc = ::connect(client_fd, (struct sockaddr*)&saddr, sizeof(saddr));
-    assert(rc == 0);
+    CHECK(rc == 0);
     std::printf("    [client] connected to server\n");
 
     /* Build and send tensor wire descriptor for K_Cache */
@@ -364,18 +367,18 @@ static void test_split_inference() {
         k_wire.shape[d] = nf_htole64(desc.shape[d]);
     }
     k_wire.payload_bytes = nf_htole64(tensor_bytes);
-    assert(send_all_s(client_fd, &k_wire, sizeof(k_wire)));
+    CHECK(send_all_s(client_fd, &k_wire, sizeof(k_wire)));
 
     /* Send K_Cache payload (GPU fence already waited) */
-    assert(send_all_s(client_fd, k_buf->data, tensor_bytes));
+    CHECK(send_all_s(client_fd, k_buf->data, tensor_bytes));
     std::printf("    [client] sent K_Cache: %zu bytes\n", tensor_bytes);
 
     /* Receive result from server */
     nf_tensor_wire result_wire{};
-    assert(recv_all_s(client_fd, &result_wire, sizeof(result_wire)));
+    CHECK(recv_all_s(client_fd, &result_wire, sizeof(result_wire)));
     uint64_t result_bytes = nf_le64toh(result_wire.payload_bytes);
     std::vector<float> received(n_floats);
-    assert(recv_all_s(client_fd, received.data(), static_cast<size_t>(result_bytes)));
+    CHECK(recv_all_s(client_fd, received.data(), static_cast<size_t>(result_bytes)));
     std::printf("    [client] received %llu bytes result\n", (unsigned long long)result_bytes);
 
     /* ---- Bit-exact verification ---- */
@@ -391,7 +394,7 @@ static void test_split_inference() {
             ++mismatches;
         }
     }
-    assert(mismatches == 0);
+    CHECK(mismatches == 0);
     std::printf("    [verify] %zu floats bit-exact: tanh(input*0.5) ✓\n", n_floats);
 
     /* ---- Cleanup ---- */

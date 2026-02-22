@@ -232,6 +232,14 @@ typedef struct nf_ctx_entry_desc {
     uint32_t        _reserved;
 } nf_ctx_entry_desc;
 
+#ifdef __cplusplus
+static_assert(sizeof(nf_ctx_entry_desc) == 560,
+    "ABI break: nf_ctx_entry_desc size changed");
+#else
+_Static_assert(sizeof(nf_ctx_entry_desc) == 560,
+    "ABI break: nf_ctx_entry_desc size changed");
+#endif
+
 /** Eviction policy for the context hub cache. */
 typedef enum nf_eviction_policy {
     NF_EVICT_LRU           = 0,  /**< Least Recently Used               */
