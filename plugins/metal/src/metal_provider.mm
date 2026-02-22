@@ -905,8 +905,8 @@ kernel void linear_tiled(device const float* A   [[buffer(0)]],
     uint row = gid.y;
     uint col = gid.x;
 
-    threadgroup float tileA[TILE_SIZE][TILE_SIZE];
-    threadgroup float tileB[TILE_SIZE][TILE_SIZE];
+    threadgroup float tileA[TILE_SIZE][TILE_SIZE + 1];  // +1 padding avoids bank conflicts
+    threadgroup float tileB[TILE_SIZE][TILE_SIZE + 1];
 
     float acc = 0.0f;
     uint numTiles = (pc.K + TILE_SIZE - 1) / TILE_SIZE;
@@ -1036,6 +1036,14 @@ kernel void silu(device const float* in  [[buffer(0)]],
     out[id] = x / (1.0f + exp(-x));
 }
 
+kernel void gelu(device const float* in  [[buffer(0)]],
+                 device float* out       [[buffer(1)]],
+                 uint id [[thread_position_in_grid]]) {
+    float x = in[id];
+    float x3 = x * x * x;
+    out[id] = 0.5f * x * (1.0f + precise::tanh(0.7978845608f * (x + 0.044715f * x3)));
+}
+
 kernel void elementwise_mul(device const float* a [[buffer(0)]],
                              device const float* b [[buffer(1)]],
                              device float* out     [[buffer(2)]],
@@ -1104,6 +1112,14 @@ kernel void silu_f16(device const half* in  [[buffer(0)]],
     out[id] = half(x / (1.0f + exp(-x)));
 }
 
+kernel void gelu_f16(device const half* in  [[buffer(0)]],
+                      device half* out       [[buffer(1)]],
+                      uint id [[thread_position_in_grid]]) {
+    float x = float(in[id]);
+    float x3 = x * x * x;
+    out[id] = half(0.5f * x * (1.0f + precise::tanh(0.7978845608f * (x + 0.044715f * x3))));
+}
+
 kernel void elementwise_mul_f16(device const half* a [[buffer(0)]],
                                  device const half* b [[buffer(1)]],
                                  device half* out     [[buffer(2)]],
@@ -1141,8 +1157,8 @@ kernel void linear_tiled_f16(device const half* A   [[buffer(0)]],
                               uint2 lid [[thread_position_in_threadgroup]]) {
     uint row = gid.y;
     uint col = gid.x;
-    threadgroup half tileA[16][16];
-    threadgroup half tileB[16][16];
+    threadgroup half tileA[16][16 + 1];  // +1 padding avoids bank conflicts
+    threadgroup half tileB[16][16 + 1];
     float acc = 0.0f;
     uint numTiles = (pc.K + TILE_SIZE_F16 - 1) / TILE_SIZE_F16;
     for (uint t = 0; t < numTiles; ++t) {
@@ -1449,6 +1465,137 @@ kernel void dequant_q4_0_linear_tiled_f16(
     }
     if (row < pc.M && col < pc.N)
         C[row * pc.N + col] = half(acc);
+}
+
+/* ---- Phase 33: Fused Dequant-Q4_0 + SIMD MatMul ---- */
+
+kernel void dequant_q4_0_linear_simd(
+    device const float*      A     [[buffer(0)]],
+    device const block_q4_0* B_q   [[buffer(1)]],
+    device float*            C     [[buffer(2)]],
+    constant PushConstants&  pc    [[buffer(15)]],
+    uint2 tgid  [[threadgroup_position_in_grid]],
+    uint  sgid  [[simdgroup_index_in_threadgroup]],
+    uint  lid   [[thread_index_in_simdgroup]])
+{
+    /* 32x32 output tile, 4x4 = 16 simdgroups, each 8x8 sub-tile */
+    const uint sg_row = sgid / 4;
+    const uint sg_col = sgid % 4;
+    const uint row_base = tgid.y * 32 + sg_row * 8;
+    const uint col_base = tgid.x * 32 + sg_col * 8;
+    if (row_base >= pc.M && col_base >= pc.N) return;
+
+    simdgroup_float8x8 acc;
+    simdgroup_float8x8 tA;
+    simdgroup_float8x8 tB;
+    acc = simdgroup_float8x8(0);
+
+    /* Per-simdgroup staging for dequantized B tile (8 rows x 8 cols) */
+    threadgroup float B_stage[16][8][8 + 1];  /* [simdgroup][row][col+1] */
+
+    for (uint k = 0; k < pc.K; k += 8) {
+        /* Load A tile via simdgroup_load */
+        if (row_base + 8 <= pc.M && k + 8 <= pc.K) {
+            simdgroup_load(tA, A + row_base * pc.K + k, pc.K);
+        } else {
+            tA = simdgroup_float8x8(0);
+            if (row_base < pc.M && k < pc.K)
+                simdgroup_load(tA, A + row_base * pc.K + k, pc.K,
+                               ulong2(min(pc.K - k, 8u), min(pc.M - row_base, 8u)));
+        }
+
+        /* Dequantize B[k:k+8, col_base:col_base+8] into per-simdgroup staging */
+        for (uint i = lid; i < 64; i += 32) {
+            uint bRow = k + (i / 8);
+            uint bCol = col_base + (i % 8);
+            float val = 0.0f;
+            if (bRow < pc.K && bCol < pc.N) {
+                uint elem = bRow * pc.N + bCol;
+                uint blk = elem / 32;
+                uint idx = elem % 32;
+                float d = float(B_q[blk].d);
+                uchar bv = B_q[blk].qs[idx % 16];
+                int nib = (idx < 16) ? (bv & 0xF) : (bv >> 4);
+                val = d * float(nib - 8);
+            }
+            B_stage[sgid][i / 8][i % 8] = val;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_load(tB, &B_stage[sgid][0][0], 9);  /* stride = 8+1 */
+        simdgroup_multiply_accumulate(acc, tA, tB, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row_base + 8 <= pc.M && col_base + 8 <= pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N);
+    } else if (row_base < pc.M && col_base < pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N,
+                        ulong2(min(pc.N - col_base, 8u), min(pc.M - row_base, 8u)));
+    }
+}
+
+kernel void dequant_q4_0_linear_simd_f16(
+    device const half*       A     [[buffer(0)]],
+    device const block_q4_0* B_q   [[buffer(1)]],
+    device half*             C     [[buffer(2)]],
+    constant PushConstants&  pc    [[buffer(15)]],
+    uint2 tgid  [[threadgroup_position_in_grid]],
+    uint  sgid  [[simdgroup_index_in_threadgroup]],
+    uint  lid   [[thread_index_in_simdgroup]])
+{
+    const uint sg_row = sgid / 4;
+    const uint sg_col = sgid % 4;
+    const uint row_base = tgid.y * 32 + sg_row * 8;
+    const uint col_base = tgid.x * 32 + sg_col * 8;
+    if (row_base >= pc.M && col_base >= pc.N) return;
+
+    simdgroup_half8x8 acc;
+    simdgroup_half8x8 tA;
+    simdgroup_half8x8 tB;
+    acc = simdgroup_half8x8(0);
+
+    /* Per-simdgroup staging for dequantized B tile (8 rows x 8 cols) */
+    threadgroup half B_stage[16][8][8 + 1];  /* [simdgroup][row][col+1] */
+
+    for (uint k = 0; k < pc.K; k += 8) {
+        if (row_base + 8 <= pc.M && k + 8 <= pc.K) {
+            simdgroup_load(tA, A + row_base * pc.K + k, pc.K);
+        } else {
+            tA = simdgroup_half8x8(0);
+            if (row_base < pc.M && k < pc.K)
+                simdgroup_load(tA, A + row_base * pc.K + k, pc.K,
+                               ulong2(min(pc.K - k, 8u), min(pc.M - row_base, 8u)));
+        }
+
+        for (uint i = lid; i < 64; i += 32) {
+            uint bRow = k + (i / 8);
+            uint bCol = col_base + (i % 8);
+            half val = half(0);
+            if (bRow < pc.K && bCol < pc.N) {
+                uint elem = bRow * pc.N + bCol;
+                uint blk = elem / 32;
+                uint idx = elem % 32;
+                float d = float(B_q[blk].d);
+                uchar bv = B_q[blk].qs[idx % 16];
+                int nib = (idx < 16) ? (bv & 0xF) : (bv >> 4);
+                val = half(d * float(nib - 8));
+            }
+            B_stage[sgid][i / 8][i % 8] = val;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_load(tB, &B_stage[sgid][0][0], 9);  /* stride = 8+1 */
+        simdgroup_multiply_accumulate(acc, tA, tB, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (row_base + 8 <= pc.M && col_base + 8 <= pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N);
+    } else if (row_base < pc.M && col_base < pc.N) {
+        simdgroup_store(acc, C + row_base * pc.N + col_base, pc.N,
+                        ulong2(min(pc.N - col_base, 8u), min(pc.M - row_base, 8u)));
+    }
 }
 
 kernel void argmax_rows(device const float* in  [[buffer(0)]],
@@ -2314,6 +2461,15 @@ static nf_status dispatch_silu(nf_provider_metal* prov, const char* op_name,
     return dispatch_unary(prov, prov->pso[is_f16 ? PSO_SILU_F16 : PSO_SILU], in_mb, out_mb, op_name);
 }
 
+static nf_status dispatch_gelu(nf_provider_metal* prov, const char* op_name,
+        const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
+    if (n_in < 1 || n_out < 1) return NF_ERROR_INVALID_ARG;
+    auto* in_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+    auto* out_mb = reinterpret_cast<MetalBuffer*>(outputs[0]);
+    bool is_f16 = (out_mb->desc.dtype == NF_DTYPE_F16);
+    return dispatch_unary(prov, prov->pso[is_f16 ? PSO_GELU_F16 : PSO_GELU], in_mb, out_mb, op_name);
+}
+
 static nf_status dispatch_elementwise_mul(nf_provider_metal* prov, const char* op_name,
         const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
     if (n_in < 2 || n_out < 1) return NF_ERROR_INVALID_ARG;
@@ -2552,15 +2708,26 @@ static nf_status dispatch_fused_dq4_linear(nf_provider_metal* prov, const char* 
     @autoreleasepool {
         id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
-        [enc setComputePipelineState:prov->pso[is_f16 ? PSO_FUSED_DQ4_LINEAR_F16 : PSO_FUSED_DQ4_LINEAR]];
         [enc setBuffer:a_mb->mtl_buffer   offset:0 atIndex:0];
         [enc setBuffer:bq_mb->mtl_buffer  offset:0 atIndex:1];
         [enc setBuffer:out_mb->mtl_buffer offset:0 atIndex:2];
         if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
         uint32_t M = 1, N = 1;
         if (pc) { std::memcpy(&M, pc + 20, sizeof(uint32_t)); std::memcpy(&N, pc + 24, sizeof(uint32_t)); }
-        NSUInteger gridW = ((N + 15) / 16) * 16, gridH = ((M + 15) / 16) * 16;
-        [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        /* SIMD path: use simdgroup matmul when GPU supports it and tiles are large enough */
+        if (prov->has_simd_matmul && M >= 8 && N >= 8) {
+            MetalPSO simd_pso = is_f16 ? PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16
+                                        : PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD;
+            [enc setComputePipelineState:prov->pso[simd_pso]];
+            NSUInteger tg_x = (N + 31) / 32;
+            NSUInteger tg_y = (M + 31) / 32;
+            [enc dispatchThreadgroups:MTLSizeMake(tg_x, tg_y, 1)
+                threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
+        } else {
+            [enc setComputePipelineState:prov->pso[is_f16 ? PSO_FUSED_DQ4_LINEAR_F16 : PSO_FUSED_DQ4_LINEAR]];
+            NSUInteger gridW = ((N + 15) / 16) * 16, gridH = ((M + 15) / 16) * 16;
+            [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        }
         [enc endEncoding];
         uint32_t ec = M * N;
         [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
@@ -2614,6 +2781,7 @@ static void init_dispatch_maps() {
         {"linear_tiled",              dispatch_linear_tiled},
         {"softmax",                   dispatch_softmax},
         {"silu",                      dispatch_silu},
+        {"gelu",                      dispatch_gelu},
         {"elementwise_mul",           dispatch_elementwise_mul},
         {"embedding_lookup",          dispatch_embedding_lookup},
         {"argmax",                    dispatch_argmax},

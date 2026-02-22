@@ -90,7 +90,7 @@ struct nf_arch_strategy {
 
 /* ---- Global registry (fixed-size, no heap) ---- */
 
-static constexpr int NF_MAX_ARCHS = 8;
+static constexpr int NF_MAX_ARCHS = 16;
 
 struct ArchRegistryState {
     nf_arch_strategy strategies[NF_MAX_ARCHS];
@@ -215,6 +215,78 @@ inline void nf_register_phi3(Phi3ArchCtx* ctx = nullptr) {
     strat.paged_attn_op_name = llama_paged_attn_op_name;
     strat.arch_ctx     = ctx;
     nf_register_arch("phi3", strat);
+}
+
+/* ---- Qwen2 strategy ---- */
+
+/* Qwen2 uses HuggingFace naming: model.layers.{idx}.self_attn.{q,k,v,o}_proj.weight
+ * In GGUF format, this maps to the standard blk.N.xxx naming (same as LLaMA).
+ * Key differences from LLaMA: none structurally — Qwen2 is a LLaMA-family arch.
+ */
+inline const char* qwen2_attn_op_name() { return "flash_attention_cached"; }
+inline const char* qwen2_rope_op_name(bool is_fp16) {
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+inline const char* qwen2_ffn_op_name() { return "silu"; }
+inline const char* qwen2_norm_op_name() { return "rms_norm"; }
+
+inline void nf_register_qwen2() {
+    nf_arch_strategy strat{};
+    strat.weight_name  = llama_weight_name;
+    strat.attn_op_name = qwen2_attn_op_name;
+    strat.rope_op_name = qwen2_rope_op_name;
+    strat.ffn_op_name  = qwen2_ffn_op_name;
+    strat.norm_op_name = qwen2_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
+    nf_register_arch("qwen2", strat);
+}
+
+/* ---- Gemma strategy ---- */
+
+/* Gemma uses GELU activation instead of SiLU, and RMS norm with +1 offset.
+ * Weight naming in GGUF follows the standard blk.N.xxx format.
+ */
+inline const char* gemma_attn_op_name() { return "flash_attention_cached"; }
+inline const char* gemma_rope_op_name(bool is_fp16) {
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+inline const char* gemma_ffn_op_name() { return "gelu"; }
+inline const char* gemma_norm_op_name() { return "rms_norm"; }
+
+inline void nf_register_gemma() {
+    nf_arch_strategy strat{};
+    strat.weight_name  = llama_weight_name;
+    strat.attn_op_name = gemma_attn_op_name;
+    strat.rope_op_name = gemma_rope_op_name;
+    strat.ffn_op_name  = gemma_ffn_op_name;
+    strat.norm_op_name = gemma_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
+    nf_register_arch("gemma", strat);
+}
+
+/* ---- Mixtral strategy (MoE) ---- */
+
+/* Mixtral is a Mixture-of-Experts variant of Mistral.
+ * Uses sliding window attention (like Mistral) and SiLU activation.
+ * MoE routing is handled at the DAG builder level via n_experts/n_experts_used
+ * in nf_arch_config. Weight naming follows standard GGUF blk.N.xxx format.
+ */
+inline const char* mixtral_attn_op_name() { return "flash_attention_cached"; }
+inline const char* mixtral_rope_op_name(bool is_fp16) {
+    return is_fp16 ? "rope_batch_f16" : "rope_batch";
+}
+inline const char* mixtral_ffn_op_name() { return "silu"; }
+inline const char* mixtral_norm_op_name() { return "rms_norm"; }
+
+inline void nf_register_mixtral() {
+    nf_arch_strategy strat{};
+    strat.weight_name  = llama_weight_name;
+    strat.attn_op_name = mixtral_attn_op_name;
+    strat.rope_op_name = mixtral_rope_op_name;
+    strat.ffn_op_name  = mixtral_ffn_op_name;
+    strat.norm_op_name = mixtral_norm_op_name;
+    strat.paged_attn_op_name = llama_paged_attn_op_name;
+    nf_register_arch("mixtral", strat);
 }
 
 /* ---- Helper: resolve op name with fallback ---- */

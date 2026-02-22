@@ -38,6 +38,10 @@ enum MetalPSO : uint16_t {
     PSO_FUSED_DQ4_LINEAR, PSO_FUSED_DQ4_LINEAR_F16,
     /* Phase 32: Paged attention */
     PSO_FLASH_ATTN_PAGED,
+    /* Phase 33: GELU activation (Gemma) */
+    PSO_GELU, PSO_GELU_F16,
+    /* Phase 33: Fused dequant+SIMD matmul */
+    PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD, PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16,
     /* Sentinel */
     PSO_COUNT
 };
@@ -107,6 +111,12 @@ static constexpr PSORegistration kPSOTable[] = {
     { PSO_FUSED_DQ4_LINEAR_F16, "dequant_q4_0_linear_tiled_f16", false },
     /* Phase 32: Paged attention */
     { PSO_FLASH_ATTN_PAGED,     "flash_attention_paged",         false },
+    /* Phase 33: GELU activation (Gemma) */
+    { PSO_GELU,                 "gelu",                          false },
+    { PSO_GELU_F16,             "gelu_f16",                      false },
+    /* Phase 33: Fused dequant+SIMD matmul */
+    { PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD,     "dequant_q4_0_linear_simd",     true },
+    { PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16, "dequant_q4_0_linear_simd_f16", true },
 };
 
 static constexpr uint16_t kPSOTableSize = sizeof(kPSOTable) / sizeof(kPSOTable[0]);

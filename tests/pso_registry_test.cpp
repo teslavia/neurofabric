@@ -91,13 +91,15 @@ int main() {
             if (kPSOTable[i].requires_simd) {
                 CHECK(kPSOTable[i].index == PSO_LINEAR_SIMD ||
                       kPSOTable[i].index == PSO_LINEAR_SIMD_F16 ||
-                      kPSOTable[i].index == PSO_LINEAR_F16_TO_F32,
+                      kPSOTable[i].index == PSO_LINEAR_F16_TO_F32 ||
+                      kPSOTable[i].index == PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD ||
+                      kPSOTable[i].index == PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16,
                       "Unexpected SIMD-conditional PSO");
                 ++simd_count;
             }
         }
-        CHECK(simd_count == 3, "Expected exactly 3 SIMD-conditional PSOs");
-        std::printf("[7] SIMD entries validated: PASS (3 entries)\n");
+        CHECK(simd_count == 5, "Expected exactly 5 SIMD-conditional PSOs");
+        std::printf("[7] SIMD entries validated: PASS (%u entries)\n", (unsigned)simd_count);
     }
 
     std::printf("\nAll PSO registry tests passed.\n");

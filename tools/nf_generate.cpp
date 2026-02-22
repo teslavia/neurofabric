@@ -40,7 +40,7 @@ static void usage(const char* prog) {
         "  --seed S         (default: random)\n"
         "  --fp16           use FP16 inference\n"
         "  --paged          use paged KV cache\n"
-        "  --arch NAME      override architecture (llama/mistral/phi3)\n",
+        "  --arch NAME      override architecture (llama/mistral/phi3/qwen2/gemma/mixtral)\n",
         prog);
 }
 
@@ -103,6 +103,9 @@ int main(int argc, char** argv) {
     nf::nf_register_llama();
     nf::nf_register_mistral();
     nf::nf_register_phi3();
+    nf::nf_register_qwen2();
+    nf::nf_register_gemma();
+    nf::nf_register_mixtral();
 
     /* Init tokenizer */
     nf::Tokenizer tokenizer(*model);

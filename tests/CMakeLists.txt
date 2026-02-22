@@ -60,6 +60,9 @@ nf_add_test(NAME nf_paged_kv_test        TEST_NAME paged_kv         SOURCES page
 nf_add_test(NAME nf_batch_scheduler_test TEST_NAME batch_scheduler  SOURCES batch_scheduler_test.cpp MODEL)
 nf_add_test(NAME nf_speculative_decode_test TEST_NAME speculative_decode SOURCES speculative_decode_test.cpp MODEL)
 nf_add_test(NAME nf_chrome_trace_test    TEST_NAME chrome_trace     SOURCES chrome_trace_test.cpp    MODEL)
+nf_add_test(NAME nf_qwen2_arch_test     TEST_NAME qwen2_arch       SOURCES qwen2_arch_test.cpp      MODEL)
+nf_add_test(NAME nf_gemma_arch_test     TEST_NAME gemma_arch       SOURCES gemma_arch_test.cpp      MODEL)
+nf_add_test(NAME nf_mixtral_arch_test   TEST_NAME mixtral_arch     SOURCES mixtral_arch_test.cpp    MODEL)
 
 # ---- Standalone tests (no nf_core, custom includes) ----
 add_executable(nf_pso_registry_test pso_registry_test.cpp)
