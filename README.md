@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/License-Apache_2.0-orange" alt="License"/>
   <img src="https://img.shields.io/badge/Tests-39%2F39_Green-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/Metal_Kernels-53-blueviolet" alt="Metal Kernels"/>
-  <img src="https://img.shields.io/badge/LOC-26.7K-lightgrey" alt="LOC"/>
+  <img src="https://img.shields.io/badge/LOC-29.8K-lightgrey" alt="LOC"/>
 </p>
 
 <p align="center">

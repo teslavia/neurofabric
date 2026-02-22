@@ -41,7 +41,7 @@ extern "C" void nf_metal_get_timings_ext(char (*op_names)[64], double* gpu_ms,
     }
 }
 
-#include "trace_export.hpp"
+#include "model/trace_export.hpp"
 
 #define CHECK(expr) do { if (!(expr)) { \
     std::fprintf(stderr, "CHECK FAILED: %s (%s:%d)\n", #expr, __FILE__, __LINE__); \

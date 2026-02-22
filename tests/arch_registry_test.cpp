@@ -5,7 +5,7 @@
  * Verifies register/lookup/fallback for the strategy pattern.
  */
 
-#include "arch_registry.hpp"
+#include "model/arch_registry.hpp"
 
 #include <cassert>
 #include <cstdio>

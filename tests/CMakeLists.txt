@@ -2,340 +2,107 @@
 # Neuro-Fabric — Tests
 # ==================================================================
 
-add_executable(nf_smoke_test smoke_test.cpp)
-target_link_libraries(nf_smoke_test PRIVATE nf_core)
-target_include_directories(nf_smoke_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME smoke COMMAND nf_smoke_test)
+# Helper: nf_add_test(NAME <exe> TEST_NAME <ctest_name> SOURCES <files...>
+#                     [LINKS <libs...>] [INCLUDES <dirs...>]
+#                     [GRAPH] [MODEL] [DEFS <defs...>])
+#   GRAPH  → adds nf_graph_objects + core/src include
+#   MODEL  → links nf_model_headers (gives "model/xxx.hpp")
+function(nf_add_test)
+    cmake_parse_arguments(T "GRAPH;MODEL" "NAME;TEST_NAME" "SOURCES;LINKS;INCLUDES;DEFS" ${ARGN})
+    set(_srcs ${T_SOURCES})
+    if(T_GRAPH)
+        list(APPEND _srcs $<TARGET_OBJECTS:nf_graph_objects>)
+    endif()
+    add_executable(${T_NAME} ${_srcs})
+    target_include_directories(${T_NAME} PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${T_INCLUDES}
+    )
+    if(T_GRAPH)
+        target_include_directories(${T_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+    endif()
+    set(_libs nf_core ${T_LINKS})
+    if(T_MODEL)
+        list(APPEND _libs nf_model_headers)
+    endif()
+    target_link_libraries(${T_NAME} PRIVATE ${_libs})
+    foreach(d ${T_DEFS})
+        target_compile_definitions(${T_NAME} PRIVATE ${d})
+    endforeach()
+    if(T_TEST_NAME)
+        add_test(NAME ${T_TEST_NAME} COMMAND ${T_NAME})
+    endif()
+endfunction()
 
-add_executable(nf_buffer_test buffer_test.cpp)
-target_link_libraries(nf_buffer_test PRIVATE nf_core)
-target_include_directories(nf_buffer_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME buffer COMMAND nf_buffer_test)
+# ------------------------------------------------------------------
+# Platform-independent tests
+# ------------------------------------------------------------------
+nf_add_test(NAME nf_smoke_test          TEST_NAME smoke            SOURCES smoke_test.cpp)
+nf_add_test(NAME nf_buffer_test         TEST_NAME buffer           SOURCES buffer_test.cpp)
+nf_add_test(NAME nf_scheduler_test      TEST_NAME scheduler        SOURCES scheduler_test.cpp)
+nf_add_test(NAME nf_e2e_test            TEST_NAME e2e              SOURCES e2e_pipeline_test.cpp)
+nf_add_test(NAME nf_split_inference_test TEST_NAME split_inference  SOURCES split_inference_test.cpp)
+nf_add_test(NAME nf_context_hub_test     TEST_NAME context_hub     SOURCES context_hub_test.cpp)
+nf_add_test(NAME nf_profiling_test       TEST_NAME profiling       SOURCES profiling_test.cpp)
 
-add_executable(nf_scheduler_test scheduler_test.cpp)
-target_link_libraries(nf_scheduler_test PRIVATE nf_core)
-target_include_directories(nf_scheduler_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME scheduler COMMAND nf_scheduler_test)
+# GRAPH tests (need mmap_buffer + GraphBuilder objects)
+nf_add_test(NAME nf_ir_loader_test       TEST_NAME ir_loader        SOURCES ir_loader_test.cpp       GRAPH)
+nf_add_test(NAME nf_nfir_e2e_test        TEST_NAME nfir_e2e         SOURCES nfir_e2e_test.cpp        GRAPH)
+nf_add_test(NAME nf_split_llama_mock_test TEST_NAME split_llama_mock SOURCES split_llama_mock_test.cpp GRAPH)
+nf_add_test(NAME nf_session_test         TEST_NAME session          SOURCES session_test.cpp         GRAPH)
+nf_add_test(NAME nf_push_constants_test  TEST_NAME push_constants   SOURCES push_constants_test.cpp  GRAPH)
 
-add_executable(nf_e2e_test e2e_pipeline_test.cpp)
-target_link_libraries(nf_e2e_test PRIVATE nf_core)
-target_include_directories(nf_e2e_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME e2e COMMAND nf_e2e_test)
+# MODEL tests (need tools/model/ headers)
+nf_add_test(NAME nf_tokenizer_test       TEST_NAME tokenizer        SOURCES tokenizer_test.cpp       MODEL)
+nf_add_test(NAME nf_arch_registry_test   TEST_NAME arch_registry    SOURCES arch_registry_test.cpp   MODEL)
+nf_add_test(NAME nf_model_config_test    TEST_NAME model_config     SOURCES model_config_test.cpp    MODEL)
+nf_add_test(NAME nf_paged_kv_test        TEST_NAME paged_kv         SOURCES paged_kv_test.cpp        MODEL)
+nf_add_test(NAME nf_batch_scheduler_test TEST_NAME batch_scheduler  SOURCES batch_scheduler_test.cpp MODEL)
+nf_add_test(NAME nf_speculative_decode_test TEST_NAME speculative_decode SOURCES speculative_decode_test.cpp MODEL)
+nf_add_test(NAME nf_chrome_trace_test    TEST_NAME chrome_trace     SOURCES chrome_trace_test.cpp    MODEL)
 
-add_executable(nf_split_inference_test split_inference_test.cpp)
-target_link_libraries(nf_split_inference_test PRIVATE nf_core)
-target_include_directories(nf_split_inference_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME split_inference COMMAND nf_split_inference_test)
-
-add_executable(nf_ir_loader_test
-    ir_loader_test.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-)
-target_link_libraries(nf_ir_loader_test PRIVATE nf_core)
-target_include_directories(nf_ir_loader_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/core/src
-)
-add_test(NAME ir_loader COMMAND nf_ir_loader_test)
-
-add_executable(nf_nfir_e2e_test
-    nfir_e2e_test.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-)
-target_link_libraries(nf_nfir_e2e_test PRIVATE nf_core)
-target_include_directories(nf_nfir_e2e_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/core/src
-)
-add_test(NAME nfir_e2e COMMAND nf_nfir_e2e_test)
-
-add_executable(nf_context_hub_test context_hub_test.cpp)
-target_link_libraries(nf_context_hub_test PRIVATE nf_core)
-target_include_directories(nf_context_hub_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME context_hub COMMAND nf_context_hub_test)
-
-add_executable(nf_split_llama_mock_test
-    split_llama_mock_test.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-)
-target_link_libraries(nf_split_llama_mock_test PRIVATE nf_core)
-target_include_directories(nf_split_llama_mock_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/core/src
-)
-add_test(NAME split_llama_mock COMMAND nf_split_llama_mock_test)
-
-add_executable(nf_profiling_test profiling_test.cpp)
-target_link_libraries(nf_profiling_test PRIVATE nf_core)
-target_include_directories(nf_profiling_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-)
-add_test(NAME profiling COMMAND nf_profiling_test)
-
-add_executable(nf_session_test
-    session_test.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-)
-target_link_libraries(nf_session_test PRIVATE nf_core)
-target_include_directories(nf_session_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/core/src
-)
-add_test(NAME session COMMAND nf_session_test)
-
-add_executable(nf_push_constants_test
-    push_constants_test.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-)
-target_link_libraries(nf_push_constants_test PRIVATE nf_core)
-target_include_directories(nf_push_constants_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/core/src
-)
-add_test(NAME push_constants COMMAND nf_push_constants_test)
-
-# ---- Tokenizer test (platform-independent, no Metal/RKNN dependency) ----
-add_executable(nf_tokenizer_test tokenizer_test.cpp)
-target_include_directories(nf_tokenizer_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_tokenizer_test PRIVATE nf_core)
-add_test(NAME tokenizer COMMAND nf_tokenizer_test)
-
-# ---- Architecture registry test (platform-independent) ----
-add_executable(nf_arch_registry_test arch_registry_test.cpp)
-target_include_directories(nf_arch_registry_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_arch_registry_test PRIVATE nf_core)
-add_test(NAME arch_registry COMMAND nf_arch_registry_test)
-
-# ---- Phase 28: PSO registry table validation (platform-independent) ----
+# ---- Standalone tests (no nf_core, custom includes) ----
 add_executable(nf_pso_registry_test pso_registry_test.cpp)
-target_include_directories(nf_pso_registry_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/plugins/metal/src
-)
+target_include_directories(nf_pso_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/plugins/metal/src)
 add_test(NAME pso_registry COMMAND nf_pso_registry_test)
 
-# ---- Phase 31: KV cache policy test (platform-independent) ----
 add_executable(nf_kv_cache_policy_test kv_cache_policy_test.cpp)
-target_include_directories(nf_kv_cache_policy_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/tools
-)
+target_include_directories(nf_kv_cache_policy_test PRIVATE ${CMAKE_SOURCE_DIR}/tools)
 add_test(NAME kv_cache_policy COMMAND nf_kv_cache_policy_test)
-
-# ---- Phase 32: ModelConfig + BlockAllocator test (platform-independent) ----
-add_executable(nf_model_config_test model_config_test.cpp)
-target_include_directories(nf_model_config_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_model_config_test PRIVATE nf_core)
-add_test(NAME model_config COMMAND nf_model_config_test)
-
-# ---- Phase 32: PagedKVCache test (platform-independent) ----
-add_executable(nf_paged_kv_test paged_kv_test.cpp)
-target_include_directories(nf_paged_kv_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_paged_kv_test PRIVATE nf_core)
-add_test(NAME paged_kv COMMAND nf_paged_kv_test)
-
-# ---- Phase 32: Batch scheduler test (platform-independent) ----
-add_executable(nf_batch_scheduler_test batch_scheduler_test.cpp)
-target_include_directories(nf_batch_scheduler_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_batch_scheduler_test PRIVATE nf_core)
-add_test(NAME batch_scheduler COMMAND nf_batch_scheduler_test)
-
-# ---- Phase 32: Speculative decoding test (platform-independent) ----
-add_executable(nf_speculative_decode_test speculative_decode_test.cpp)
-target_include_directories(nf_speculative_decode_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_speculative_decode_test PRIVATE nf_core)
-add_test(NAME speculative_decode COMMAND nf_speculative_decode_test)
-
-# ---- Chrome trace export test (platform-independent, mocks Metal timing) ----
-add_executable(nf_chrome_trace_test chrome_trace_test.cpp)
-target_include_directories(nf_chrome_trace_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/tools
-)
-target_link_libraries(nf_chrome_trace_test PRIVATE nf_core)
-add_test(NAME chrome_trace COMMAND nf_chrome_trace_test)
-
+# ------------------------------------------------------------------
+# Metal-dependent tests
+# ------------------------------------------------------------------
 if(NF_PLUGIN_METAL)
-    # Phase 31: Mistral architecture test
-    add_executable(nf_mistral_arch_test mistral_arch_test.cpp)
-    target_link_libraries(nf_mistral_arch_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_mistral_arch_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/tools
-    )
-    add_test(NAME mistral_arch COMMAND nf_mistral_arch_test)
-
-    # Phase 31: Phi-3 architecture test
-    add_executable(nf_phi3_arch_test phi3_arch_test.cpp)
-    target_link_libraries(nf_phi3_arch_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_phi3_arch_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/tools
-    )
-    add_test(NAME phi3_arch COMMAND nf_phi3_arch_test)
-
-    add_executable(nf_silicon_test silicon_test.cpp)
-    target_link_libraries(nf_silicon_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_silicon_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME silicon COMMAND nf_silicon_test)
-
-    add_executable(nf_dequant_test dequant_test.cpp)
-    target_link_libraries(nf_dequant_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_dequant_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME dequant COMMAND nf_dequant_test)
-
-    add_executable(nf_kquant_dequant_test kquant_dequant_test.cpp)
-    target_link_libraries(nf_kquant_dequant_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_kquant_dequant_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME kquant_dequant COMMAND nf_kquant_dequant_test)
-
-    add_executable(nf_transformer_test transformer_test.cpp)
-    target_link_libraries(nf_transformer_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_transformer_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME transformer COMMAND nf_transformer_test)
-
-    add_executable(nf_multi_layer_test multi_layer_test.cpp)
-    target_link_libraries(nf_multi_layer_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_multi_layer_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME multi_layer COMMAND nf_multi_layer_test)
-
-    add_executable(nf_dag_inference_test dag_inference_test.cpp)
-    target_link_libraries(nf_dag_inference_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_dag_inference_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME dag_inference COMMAND nf_dag_inference_test)
-
-    add_executable(nf_real_model_test real_model_test.cpp)
-    target_link_libraries(nf_real_model_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_real_model_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/tools
-    )
-    add_test(NAME real_model COMMAND nf_real_model_test)
-
-    add_executable(nf_matmul_bench_test matmul_bench_test.cpp)
-    target_link_libraries(nf_matmul_bench_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_matmul_bench_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME matmul_bench COMMAND nf_matmul_bench_test)
-
-    # Phase 27: FP16 kernel unit tests
-    add_executable(nf_fp16_kernel_test fp16_kernel_test.cpp)
-    target_link_libraries(nf_fp16_kernel_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_fp16_kernel_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME fp16_kernel COMMAND nf_fp16_kernel_test)
-
-    # Phase 27: FP16 E2E inference test
-    add_executable(nf_fp16_e2e_test fp16_e2e_test.cpp)
-    target_link_libraries(nf_fp16_e2e_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_fp16_e2e_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/tools
-    )
-    add_test(NAME fp16_e2e COMMAND nf_fp16_e2e_test)
+    nf_add_test(NAME nf_mistral_arch_test  TEST_NAME mistral_arch   SOURCES mistral_arch_test.cpp  LINKS nf_plugin_metal MODEL)
+    nf_add_test(NAME nf_phi3_arch_test     TEST_NAME phi3_arch      SOURCES phi3_arch_test.cpp     LINKS nf_plugin_metal MODEL)
+    nf_add_test(NAME nf_silicon_test       TEST_NAME silicon        SOURCES silicon_test.cpp       LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_dequant_test       TEST_NAME dequant        SOURCES dequant_test.cpp       LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_kquant_dequant_test TEST_NAME kquant_dequant SOURCES kquant_dequant_test.cpp LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_transformer_test   TEST_NAME transformer    SOURCES transformer_test.cpp   LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_multi_layer_test   TEST_NAME multi_layer    SOURCES multi_layer_test.cpp   LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_dag_inference_test TEST_NAME dag_inference  SOURCES dag_inference_test.cpp LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_real_model_test    TEST_NAME real_model     SOURCES real_model_test.cpp    LINKS nf_plugin_metal MODEL)
+    nf_add_test(NAME nf_matmul_bench_test  TEST_NAME matmul_bench   SOURCES matmul_bench_test.cpp  LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_fp16_kernel_test   TEST_NAME fp16_kernel    SOURCES fp16_kernel_test.cpp   LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_fp16_e2e_test      TEST_NAME fp16_e2e       SOURCES fp16_e2e_test.cpp      LINKS nf_plugin_metal MODEL)
 
     # Phase 28: F16 vs F32 micro-benchmark (built, NOT added to ctest)
-    add_executable(nf_benchmark_kernels benchmark_kernels.cpp)
-    target_link_libraries(nf_benchmark_kernels PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_benchmark_kernels PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
+    nf_add_test(NAME nf_benchmark_kernels  SOURCES benchmark_kernels.cpp LINKS nf_plugin_metal)
 
-    # Phase 29: Fused dequant+linear correctness test
-    add_executable(nf_fused_matmul_test fused_matmul_test.cpp)
-    target_link_libraries(nf_fused_matmul_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_fused_matmul_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME fused_matmul COMMAND nf_fused_matmul_test)
-
-    # Phase 30: Sliding window attention test
-    add_executable(nf_sliding_window_test sliding_window_test.cpp)
-    target_link_libraries(nf_sliding_window_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_sliding_window_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME sliding_window COMMAND nf_sliding_window_test)
-
-    # Phase 30: Fused op DAG integration test (requires NF_TEST_GGUF_PATH)
-    add_executable(nf_fused_warmup_test fused_warmup_test.cpp)
-    target_link_libraries(nf_fused_warmup_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_fused_warmup_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/tools
-    )
-    add_test(NAME fused_warmup COMMAND nf_fused_warmup_test)
-
-    # Phase 32: Paged attention kernel test
-    add_executable(nf_paged_attn_test paged_attn_test.cpp)
-    target_link_libraries(nf_paged_attn_test PRIVATE nf_core nf_plugin_metal)
-    target_include_directories(nf_paged_attn_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-    )
-    add_test(NAME paged_attn COMMAND nf_paged_attn_test)
+    nf_add_test(NAME nf_fused_matmul_test  TEST_NAME fused_matmul   SOURCES fused_matmul_test.cpp  LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_sliding_window_test TEST_NAME sliding_window SOURCES sliding_window_test.cpp LINKS nf_plugin_metal)
+    nf_add_test(NAME nf_fused_warmup_test  TEST_NAME fused_warmup   SOURCES fused_warmup_test.cpp  LINKS nf_plugin_metal MODEL)
+    nf_add_test(NAME nf_paged_attn_test    TEST_NAME paged_attn     SOURCES paged_attn_test.cpp    LINKS nf_plugin_metal)
 endif()
 
+# ------------------------------------------------------------------
+# RKNN-dependent tests
+# ------------------------------------------------------------------
 if(NF_PLUGIN_RKNN)
-    add_executable(nf_rknn_silicon_test
-        rknn_silicon_test.cpp
-        ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-        ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
-    )
-    target_link_libraries(nf_rknn_silicon_test PRIVATE nf_core nf_plugin_rknn)
-    target_include_directories(nf_rknn_silicon_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/core/src
-    )
+    nf_add_test(NAME nf_rknn_silicon_test TEST_NAME rknn_silicon SOURCES rknn_silicon_test.cpp
+        GRAPH LINKS nf_plugin_rknn)
     if(NF_HAS_RKNN_SDK)
         target_compile_definitions(nf_rknn_silicon_test PRIVATE NF_HAS_RKNN_SDK)
         target_link_libraries(nf_rknn_silicon_test PRIVATE ${RKNN_RT})
     endif()
-    add_test(NAME rknn_silicon COMMAND nf_rknn_silicon_test)
 endif()

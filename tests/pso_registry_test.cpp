@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <string>
 
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \

@@ -1,0 +1,6 @@
+FROM neurofabric-builder-base:latest
+
+# RPi4: CPU-only, no accelerator SDK needed
+COPY sysroot/rpi4/ /opt/rpi4-sysroot/
+
+ENV SYSROOT=/opt/rpi4-sysroot

@@ -18,6 +18,21 @@ set(NF_CORE_SOURCES
     src/graph/GraphBuilder.cpp
 )
 
+# ------------------------------------------------------------------
+# OBJECT library: graph internals reused by tests/tools without
+# recompiling from source in every target.
+# ------------------------------------------------------------------
+add_library(nf_graph_objects OBJECT
+    src/graph/mmap_buffer.cpp
+    src/graph/GraphBuilder.cpp
+)
+target_include_directories(nf_graph_objects
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_target_properties(nf_graph_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Platform-specific dynamic library loading implementation.
 # Physical isolation: only ONE of these compiles per target OS.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

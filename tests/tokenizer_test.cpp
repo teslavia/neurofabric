@@ -8,7 +8,7 @@
  * plus optional real-model tests when NF_TEST_GGUF_PATH is set.
  */
 
-#include "../tools/tokenizer.hpp"
+#include "model/tokenizer.hpp"
 
 #include <cstdio>
 #include <cstdlib>

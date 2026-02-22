@@ -22,6 +22,7 @@ cmake-build-*/
 # Claude
 .claude/
 CLAUDE.md
+.claudeignore
 
 MEMORY.md
 tools/nf_compiler/__pycache__/
@@ -30,5 +31,6 @@ __pycache__/
 *.nfir
 **/docs/**
 build-rel/
+build-rk3588/
 
 **models/**

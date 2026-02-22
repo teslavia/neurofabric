@@ -2,12 +2,15 @@
 # Neuro-Fabric — CLI Tools
 # ==================================================================
 
+# ---- INTERFACE library: model headers (gives consumers "model/xxx.hpp") ----
+add_library(nf_model_headers INTERFACE)
+target_include_directories(nf_model_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # ---- nf_node_cli: universal coordinator/worker/local executor ----
 # Phase 12: no longer requires RKNN — uses GraphBuilder + PipelineEngine
 add_executable(nf_node_cli
     nf_node_cli.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+    $<TARGET_OBJECTS:nf_graph_objects>
 )
 
 target_include_directories(nf_node_cli PRIVATE
@@ -37,13 +40,11 @@ endif()
 if(NF_PLUGIN_METAL)
     add_executable(nf_generate
         nf_generate.cpp
-        ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-        ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+        $<TARGET_OBJECTS:nf_graph_objects>
     )
     target_include_directories(nf_generate PRIVATE
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/src
-        ${CMAKE_SOURCE_DIR}/tools
     )
-    target_link_libraries(nf_generate PRIVATE nf_core nf_plugin_metal)
+    target_link_libraries(nf_generate PRIVATE nf_core nf_plugin_metal nf_model_headers)
 endif()

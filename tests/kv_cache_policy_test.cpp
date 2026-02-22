@@ -12,7 +12,7 @@
  *   5. INT8 F16 variant: round-trip correctness
  */
 
-#include "kv_cache_policy.hpp"
+#include "model/kv_cache_policy.hpp"
 
 #include <cstdio>
 #include <cstdlib>

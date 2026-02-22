@@ -9,7 +9,7 @@
  *   4. SequenceKV_block_table
  */
 
-#include "model_config.hpp"
+#include "model/model_config.hpp"
 
 #include <cstdio>
 #include <cstdlib>

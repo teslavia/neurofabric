@@ -12,11 +12,11 @@
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
 #include "neurofabric/PipelineEngine.hpp"
-#include "gguf_loader.hpp"
-#include "llama_dag_builder.hpp"
-#include "arch_registry.hpp"
-#include "sampler.hpp"
-#include "tokenizer.hpp"
+#include "model/gguf_loader.hpp"
+#include "model/llama_dag_builder.hpp"
+#include "model/arch_registry.hpp"
+#include "model/sampler.hpp"
+#include "model/tokenizer.hpp"
 
 #include <chrono>
 #include <cstdio>

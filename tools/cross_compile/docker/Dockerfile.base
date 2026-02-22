@@ -1,0 +1,27 @@
+FROM debian:bookworm AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG TARGET_ARCH=aarch64
+
+# Cross-compilation toolchain (parameterized by arch)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    pkg-config \
+    gcc-${TARGET_ARCH}-linux-gnu \
+    g++-${TARGET_ARCH}-linux-gnu \
+    binutils-${TARGET_ARCH}-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+ENV CC=${TARGET_ARCH}-linux-gnu-gcc
+ENV CXX=${TARGET_ARCH}-linux-gnu-g++
+ENV AR=${TARGET_ARCH}-linux-gnu-ar
+ENV RANLIB=${TARGET_ARCH}-linux-gnu-ranlib
+ENV IN_DOCKER=1
+
+CMD ["/bin/bash"]

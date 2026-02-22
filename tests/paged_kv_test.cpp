@@ -8,7 +8,7 @@
  *   3. PagedKVCache_multi_sequence
  */
 
-#include "model_config.hpp"
+#include "model/model_config.hpp"
 
 #include <cstdio>
 #include <cstdlib>

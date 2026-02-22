@@ -1,0 +1,47 @@
+# Build artifacts
+build/
+build-rel/
+cmake-build-*/
+
+# Virtual environments
+.venv/
+venv/
+
+# Models & weights (large binary files)
+models/
+*.gguf
+*.bin
+*.nfir
+*.rknn
+
+# Compiled objects
+*.o
+*.d
+*.dylib
+*.so
+*.dll
+*.a
+*.lib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Docs (generated)
+docs/
+
+# Logs & traces
+*.json.trace
+*.chrome_trace

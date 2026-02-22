@@ -1,0 +1,6 @@
+FROM neurofabric-builder-base:latest
+
+# Ascend: placeholder — add CANN SDK copy here when available
+COPY sysroot/ascend/ /opt/ascend-sysroot/
+
+ENV SYSROOT=/opt/ascend-sysroot

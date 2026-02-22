@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/License-Apache_2.0-orange" alt="License"/>
   <img src="https://img.shields.io/badge/Tests-39%2F39_Green-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/Metal_Kernels-53-blueviolet" alt="Metal Kernels"/>
-  <img src="https://img.shields.io/badge/LOC-26.7K-lightgrey" alt="LOC"/>
+  <img src="https://img.shields.io/badge/LOC-29.8K-lightgrey" alt="LOC"/>
 </p>
 
 <p align="center">
@@ -261,8 +261,8 @@ print(f"Latency: {session.last_step_us():.1f} µs")
 
 ```cpp
 #include <neurofabric/PipelineEngine.hpp>
-#include "gguf_loader.hpp"
-#include "llama_dag_builder.hpp"
+#include "model/gguf_loader.hpp"
+#include "model/llama_dag_builder.hpp"
 
 // Load GGUF model
 auto* model = nf::gguf_open("llama-7b.Q4_0.gguf");
@@ -399,7 +399,7 @@ Architecture is auto-detected from GGUF metadata, or overridden with `--arch`:
 ## Project Structure
 
 ```
-neurofabric/                              26,711 LOC · 80+ files · 39 tests
+neurofabric/                              29,826 LOC · 88 files · 39 tests
 ├── core/
 │   ├── include/neurofabric/
 │   │   ├── neuro_fabric_abi.h            Layer 1: provider vtable, opaque handles
@@ -421,18 +421,28 @@ neurofabric/                              26,711 LOC · 80+ files · 39 tests
 ├── tools/
 │   ├── nf_generate.cpp                   End-to-end text generation CLI
 │   ├── nf_node_cli.cpp                   Coordinator/worker/local CLI
-│   ├── llama_dag_builder.hpp             1,694 LOC — multi-arch DAG construction
-│   ├── model_config.hpp                  ModelConfig, PagedKVCache, RequestScheduler
-│   ├── kv_cache_policy.hpp               None/Sliding/LRU/Paged eviction + INT8 KV
-│   ├── arch_registry.hpp                 Strategy pattern for LLaMA/Mistral/Phi-3
-│   ├── gguf_loader.hpp                   GGUF v2/v3 parser, mmap weights
-│   ├── tokenizer.hpp                     BPE tokenizer (byte-fallback)
-│   ├── sampler.hpp                       Temperature / top-k / top-p / repeat penalty
+│   ├── model/                            Model header-only libraries
+│   │   ├── llama_dag_builder.hpp         1,694 LOC — multi-arch DAG construction
+│   │   ├── model_config.hpp              ModelConfig, PagedKVCache, RequestScheduler
+│   │   ├── kv_cache_policy.hpp           None/Sliding/LRU/Paged eviction + INT8 KV
+│   │   ├── arch_registry.hpp             Strategy pattern for LLaMA/Mistral/Phi-3
+│   │   ├── gguf_loader.hpp               GGUF v2/v3 parser, mmap weights
+│   │   ├── tokenizer.hpp                 BPE tokenizer (byte-fallback)
+│   │   ├── sampler.hpp                   Temperature / top-k / top-p / repeat penalty
+│   │   ├── quant_registry.hpp            Quantization format registry
+│   │   └── trace_export.hpp              Chrome trace export
+│   ├── cross_compile/                    Cross-compilation toolchain
+│   │   ├── build.sh / deploy.sh          Build & deploy scripts
+│   │   ├── prepare_sysroot.sh            Sysroot preparation
+│   │   ├── toolchains/                   CMake toolchain files
+│   │   ├── boards/                       Board configs (RK3588, RPi4, Ascend)
+│   │   ├── devices/                      Device deploy configs
+│   │   └── docker/                       Docker cross-compile environments
 │   └── nf_compiler/export_nfir.py        Python AOT compiler
 ├── python/
 │   ├── neurofabric.py                    Zero-dependency ctypes binding
 │   └── autoregressive_inference.py       Python inference example
-├── tests/                                39 test files, 12,741 LOC
+├── tests/                                39 test files, 12,742 LOC
 └── docs/
     └── ARCHITECTURE.md                   Full architecture document (Chinese)
 ```

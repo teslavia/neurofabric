@@ -4,8 +4,7 @@
 
 add_library(nf_c_api SHARED
     nf_c_api.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/mmap_buffer.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/graph/GraphBuilder.cpp
+    $<TARGET_OBJECTS:nf_graph_objects>
 )
 
 target_compile_definitions(nf_c_api PRIVATE NF_C_API_BUILDING)

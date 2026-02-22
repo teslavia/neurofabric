@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/License-Apache_2.0-orange" alt="License"/>
   <img src="https://img.shields.io/badge/Tests-39%2F39_Green-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/Metal_Kernels-53-blueviolet" alt="Metal Kernels"/>
-  <img src="https://img.shields.io/badge/LOC-26.7K-lightgrey" alt="LOC"/>
+  <img src="https://img.shields.io/badge/LOC-29.8K-lightgrey" alt="LOC"/>
 </p>
 
 <p align="center">
@@ -260,8 +260,8 @@ print(f"Latency: {session.last_step_us():.1f} µs")
 
 ```cpp
 #include <neurofabric/PipelineEngine.hpp>
-#include "gguf_loader.hpp"
-#include "llama_dag_builder.hpp"
+#include "model/gguf_loader.hpp"
+#include "model/llama_dag_builder.hpp"
 
 // 加载 GGUF 模型
 auto* model = nf::gguf_open("llama-7b.Q4_0.gguf");
@@ -398,7 +398,7 @@ NeuroFabric 使用**策略模式**处理架构特定行为。每种架构注册�
 ## 项目结构
 
 ```
-neurofabric/                              26,711 LOC · 80+ 文件 · 39 测试
+neurofabric/                              29,826 LOC · 88 文件 · 39 测试
 ├── core/
 │   ├── include/neurofabric/
 │   │   ├── neuro_fabric_abi.h            Layer 1: provider 虚表, 不透明句柄
@@ -420,18 +420,28 @@ neurofabric/                              26,711 LOC · 80+ 文件 · 39 测试
 ├── tools/
 │   ├── nf_generate.cpp                   端到端文本生成 CLI
 │   ├── nf_node_cli.cpp                   协调器/工作节点/本地 CLI
-│   ├── llama_dag_builder.hpp             1,694 LOC — 多架构 DAG 构建
-│   ├── model_config.hpp                  ModelConfig, PagedKVCache, RequestScheduler
-│   ├── kv_cache_policy.hpp               None/Sliding/LRU/Paged 淘汰 + INT8 KV
-│   ├── arch_registry.hpp                 LLaMA/Mistral/Phi-3 策略模式
-│   ├── gguf_loader.hpp                   GGUF v2/v3 解析器, mmap 权重
-│   ├── tokenizer.hpp                     BPE 分词器 (字节回退)
-│   ├── sampler.hpp                       Temperature / top-k / top-p / 重复惩罚
+│   ├── model/                            模型相关头文件库
+│   │   ├── llama_dag_builder.hpp         1,694 LOC — 多架构 DAG 构建
+│   │   ├── model_config.hpp              ModelConfig, PagedKVCache, RequestScheduler
+│   │   ├── kv_cache_policy.hpp           None/Sliding/LRU/Paged 淘汰 + INT8 KV
+│   │   ├── arch_registry.hpp             LLaMA/Mistral/Phi-3 策略模式
+│   │   ├── gguf_loader.hpp               GGUF v2/v3 解析器, mmap 权重
+│   │   ├── tokenizer.hpp                 BPE 分词器 (字节回退)
+│   │   ├── sampler.hpp                   Temperature / top-k / top-p / 重复惩罚
+│   │   ├── quant_registry.hpp            量化格式注册表
+│   │   └── trace_export.hpp              Chrome trace 导出
+│   ├── cross_compile/                    交叉编译工具链
+│   │   ├── build.sh / deploy.sh          构建 & 部署脚本
+│   │   ├── prepare_sysroot.sh            Sysroot 准备
+│   │   ├── toolchains/                   CMake 工具链文件
+│   │   ├── boards/                       板级配置 (RK3588, RPi4, Ascend)
+│   │   ├── devices/                      设备部署配置
+│   │   └── docker/                       Docker 交叉编译环境
 │   └── nf_compiler/export_nfir.py        Python AOT 编译器
 ├── python/
 │   ├── neurofabric.py                    零依赖 ctypes 绑定
 │   └── autoregressive_inference.py       Python 推理示例
-├── tests/                                39 个测试文件, 12,741 LOC
+├── tests/                                39 个测试文件, 12,742 LOC
 └── docs/
     └── ARCHITECTURE.md                   完整架构文档
 ```

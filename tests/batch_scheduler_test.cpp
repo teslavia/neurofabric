@@ -9,7 +9,7 @@
  *   4. Scheduler_token_budget — max_batch_tokens budget enforcement
  */
 
-#include "model_config.hpp"
+#include "model/model_config.hpp"
 
 #include <cstdio>
 #include <cstdlib>

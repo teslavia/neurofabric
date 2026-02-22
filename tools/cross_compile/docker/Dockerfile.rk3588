@@ -1,0 +1,6 @@
+FROM neurofabric-builder-base:latest
+
+# Copy RK3588 sysroot (RKNN headers + libs)
+COPY sysroot/rk3588/ /opt/rk3588-sysroot/
+
+ENV SYSROOT=/opt/rk3588-sysroot

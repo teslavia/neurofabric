@@ -14,10 +14,10 @@
 #include "neurofabric/neuro_scheduler_abi.h"
 #include "neurofabric/PipelineEngine.hpp"
 
-#include "gguf_loader.hpp"
-#include "llama_dag_builder.hpp"
-#include "sampler.hpp"
-#include "tokenizer.hpp"
+#include "model/gguf_loader.hpp"
+#include "model/llama_dag_builder.hpp"
+#include "model/sampler.hpp"
+#include "model/tokenizer.hpp"
 
 #include <chrono>
 #include <cmath>

@@ -51,6 +51,7 @@ option(NF_BUILD_EXAMPLES "Build example programs"     ON)
 option(NF_PLUGIN_METAL   "Build Apple Metal plugin"   OFF)
 option(NF_PLUGIN_RKNN    "Build Rockchip RKNN plugin" OFF)
 option(NF_PLUGIN_NETWORK "Build Network Proxy plugin"  ON)
+set(NF_TARGET_BOARD "" CACHE STRING "Target board (rk3588, rpi4, ascend)")
 
 # Auto-detect Apple Silicon
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
@@ -59,10 +60,21 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     message(STATUS "[NF] Apple Silicon detected — Metal plugin enabled (OBJCXX)")
 endif()
 
-# Auto-detect Linux aarch64 (Rock 5B+ / RK3588)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+# Board-specific plugin selection
+if(NF_TARGET_BOARD STREQUAL "rk3588")
     set(NF_PLUGIN_RKNN ON CACHE BOOL "" FORCE)
-    message(STATUS "[NF] Linux aarch64 detected — RKNN plugin enabled")
+    message(STATUS "[NF] Target board: rk3588 — RKNN plugin enabled")
+elseif(NF_TARGET_BOARD STREQUAL "ascend")
+    # future: set(NF_PLUGIN_ASCEND ON CACHE BOOL "" FORCE)
+    message(STATUS "[NF] Target board: ascend")
+elseif(NF_TARGET_BOARD STREQUAL "rpi4")
+    message(STATUS "[NF] Target board: rpi4 — CPU-only")
+elseif(NF_TARGET_BOARD STREQUAL "")
+    # Fallback: legacy auto-detect for native on-device builds
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        set(NF_PLUGIN_RKNN ON CACHE BOOL "" FORCE)
+        message(STATUS "[NF] Linux aarch64 detected — RKNN plugin enabled (auto)")
+    endif()
 endif()
 
 # ------------------------------------------------------------------

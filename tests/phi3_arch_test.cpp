@@ -11,10 +11,10 @@
  *   4. (Optional) Real model decode with NF_TEST_GGUF_PATH_PHI3
  */
 
-#include "arch_registry.hpp"
-#include "kv_cache_policy.hpp"
-#include "gguf_loader.hpp"
-#include "llama_dag_builder.hpp"
+#include "model/arch_registry.hpp"
+#include "model/kv_cache_policy.hpp"
+#include "model/gguf_loader.hpp"
+#include "model/llama_dag_builder.hpp"
 #include "neurofabric/neuro_fabric_abi.h"
 #include "neurofabric/neuro_buffer_abi.h"
 #include "neurofabric/PipelineEngine.hpp"
