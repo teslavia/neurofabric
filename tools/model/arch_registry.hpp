@@ -84,8 +84,9 @@ struct nf_arch_strategy {
     typedef const char* (*nf_paged_attn_op_name_fn)();
     nf_paged_attn_op_name_fn paged_attn_op_name;
 
-    /* Reserved for Phase 33 */
-    void*               reserved[1];
+    /* Phase 34: GQA attention op name (nullptr → use cached attention with pc.M) */
+    typedef const char* (*nf_gqa_attn_op_name_fn)();
+    nf_gqa_attn_op_name_fn gqa_attn_op_name;
 };
 
 /* ---- Global registry (fixed-size, no heap) ---- */
@@ -131,6 +132,7 @@ inline void nf_clear_arch_registry() {
 /* ---- Default LLaMA strategy functions ---- */
 
 inline const char* llama_attn_op_name() { return "flash_attention_cached"; }
+inline const char* llama_gqa_attn_op_name() { return "flash_attention_gqa"; }
 inline const char* llama_paged_attn_op_name() { return "flash_attention_paged"; }
 inline const char* mistral_attn_op_name() { return "flash_attention_cached"; }
 
@@ -163,6 +165,7 @@ inline void nf_register_llama() {
     strat.ffn_op_name  = llama_ffn_op_name;
     strat.norm_op_name = llama_norm_op_name;
     strat.paged_attn_op_name = llama_paged_attn_op_name;
+    strat.gqa_attn_op_name = llama_gqa_attn_op_name;
     nf_register_arch("llama", strat);
 }
 
@@ -175,6 +178,7 @@ inline void nf_register_mistral() {
     strat.ffn_op_name  = llama_ffn_op_name;
     strat.norm_op_name = llama_norm_op_name;
     strat.paged_attn_op_name = llama_paged_attn_op_name;
+    strat.gqa_attn_op_name = llama_gqa_attn_op_name;
     nf_register_arch("mistral", strat);
 }
 
@@ -314,6 +318,11 @@ inline const char* nf_resolve_attn_op(const nf_arch_strategy* strat) {
 inline const char* nf_resolve_paged_attn_op(const nf_arch_strategy* strat) {
     if (strat && strat->paged_attn_op_name) return strat->paged_attn_op_name();
     return "flash_attention_paged";
+}
+
+inline const char* nf_resolve_gqa_attn_op(const nf_arch_strategy* strat) {
+    if (strat && strat->gqa_attn_op_name) return strat->gqa_attn_op_name();
+    return "flash_attention_gqa";
 }
 
 } /* namespace nf */

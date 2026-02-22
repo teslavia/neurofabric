@@ -16,6 +16,7 @@ set(NF_CORE_SOURCES
     src/plugin_loader.cpp
     src/graph/mmap_buffer.cpp
     src/graph/GraphBuilder.cpp
+    src/metrics.cpp
 )
 
 # ------------------------------------------------------------------

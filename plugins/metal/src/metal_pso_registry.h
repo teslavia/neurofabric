@@ -42,6 +42,10 @@ enum MetalPSO : uint16_t {
     PSO_GELU, PSO_GELU_F16,
     /* Phase 33: Fused dequant+SIMD matmul */
     PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD, PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16,
+    /* Phase 34: GQA flash attention */
+    PSO_FLASH_ATTN_GQA, PSO_FLASH_ATTN_GQA_F16,
+    /* Phase 34: MoE expert routing */
+    PSO_MOE_GATE, PSO_MOE_SCATTER,
     /* Sentinel */
     PSO_COUNT
 };
@@ -117,6 +121,12 @@ static constexpr PSORegistration kPSOTable[] = {
     /* Phase 33: Fused dequant+SIMD matmul */
     { PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD,     "dequant_q4_0_linear_simd",     true },
     { PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16, "dequant_q4_0_linear_simd_f16", true },
+    /* Phase 34: GQA flash attention */
+    { PSO_FLASH_ATTN_GQA,     "flash_attention_gqa",     false },
+    { PSO_FLASH_ATTN_GQA_F16, "flash_attention_gqa_f16", false },
+    /* Phase 34: MoE expert routing */
+    { PSO_MOE_GATE,    "moe_top_k_gating",   false },
+    { PSO_MOE_SCATTER, "moe_scatter_gather",  false },
 };
 
 static constexpr uint16_t kPSOTableSize = sizeof(kPSOTable) / sizeof(kPSOTable[0]);

@@ -4,9 +4,11 @@
  *
  * Phase 24: Tokenizer Integration & MatMul Optimization.
  * Phase 31: Multi-Architecture support (--arch flag, auto-detection).
+ * Phase 34: Chat mode, streaming callback, error handling, signal handling.
  *
  * Usage: nf_generate <gguf_path> "prompt text" [--max-tokens N] [--temperature T]
  *                    [--top-k K] [--top-p P] [--seed S] [--fp16] [--arch NAME]
+ *                    [--chat] [--chat-format FORMAT]
  */
 
 #include "neurofabric/neuro_fabric_abi.h"
@@ -17,8 +19,10 @@
 #include "model/arch_registry.hpp"
 #include "model/sampler.hpp"
 #include "model/tokenizer.hpp"
+#include "model/chat_template.hpp"
 
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +32,10 @@
 
 extern "C" nf_status nf_plugin_register(nf_provider_vtable* vt, nf_provider* prov);
 extern "C" nf_status nf_plugin_register_mem(nf_provider_mem_vtable* vt, nf_provider* prov);
+
+/* Phase 35-F: Graceful shutdown */
+static volatile sig_atomic_t g_stop = 0;
+static void signal_handler(int) { g_stop = 1; }
 
 static void usage(const char* prog) {
     std::fprintf(stderr,
@@ -40,7 +48,9 @@ static void usage(const char* prog) {
         "  --seed S         (default: random)\n"
         "  --fp16           use FP16 inference\n"
         "  --paged          use paged KV cache\n"
-        "  --arch NAME      override architecture (llama/mistral/phi3/qwen2/gemma/mixtral)\n",
+        "  --arch NAME      override architecture (llama/mistral/phi3/qwen2/gemma/mixtral)\n"
+        "  --chat           enable chat template mode\n"
+        "  --chat-format F  chatml|llama|phi3 (default: auto)\n",
         prog);
 }
 
@@ -49,7 +59,10 @@ int main(int argc, char** argv) {
 
     const char* gguf_path = argv[1];
     std::string prompt = argv[2];
-/* PLACEHOLDER_MAIN_CONTINUE */
+
+    /* Phase 35-F: Install signal handlers */
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
     /* Parse options */
     uint32_t max_tokens = 32;
@@ -62,7 +75,9 @@ int main(int argc, char** argv) {
     bool has_seed = false;
     bool use_fp16 = false;
     bool use_paged = false;
+    bool chat_mode = false;
     const char* arch_override = nullptr;
+    const char* chat_format_str = nullptr;
 
     /* Check NF_FP16 env var */
     const char* fp16_env = std::getenv("NF_FP16");
@@ -85,6 +100,10 @@ int main(int argc, char** argv) {
             use_fp16 = true;
         else if (std::strcmp(argv[i], "--paged") == 0)
             use_paged = true;
+        else if (std::strcmp(argv[i], "--chat") == 0)
+            chat_mode = true;
+        else if (std::strcmp(argv[i], "--chat-format") == 0 && i + 1 < argc)
+            chat_format_str = argv[++i];
         else if (std::strcmp(argv[i], "--arch") == 0 && i + 1 < argc)
             arch_override = argv[++i];
     }
@@ -109,6 +128,28 @@ int main(int argc, char** argv) {
 
     /* Init tokenizer */
     nf::Tokenizer tokenizer(*model);
+
+    /* Phase 34-D: Chat template mode */
+    if (chat_mode) {
+        nf::ChatFormat fmt = nf::ChatFormat::AUTO;
+        if (chat_format_str) {
+            if (std::strcmp(chat_format_str, "chatml") == 0) fmt = nf::ChatFormat::CHATML;
+            else if (std::strcmp(chat_format_str, "llama") == 0) fmt = nf::ChatFormat::LLAMA;
+            else if (std::strcmp(chat_format_str, "phi3") == 0) fmt = nf::ChatFormat::PHI3;
+        }
+        const char* arch_for_chat = arch_override ? arch_override :
+            (model->architecture.empty() ? "llama" : model->architecture.c_str());
+        std::vector<nf::ChatMessage> msgs;
+        msgs.push_back({nf::ChatRole::USER, prompt});
+        prompt = nf::apply_chat_template(msgs, fmt, arch_for_chat);
+        std::fprintf(stderr, "[nf_generate] chat mode: %s format\n",
+                     chat_format_str ? chat_format_str : "auto");
+    }
+
+    /* Phase 34-C: Streaming callback setup */
+    nf_session_callbacks stream_cb{};
+    stream_cb.on_token = nullptr;
+    stream_cb.userdata = nullptr;
 
     /* Init Metal */
     nf_provider prov;
@@ -188,7 +229,8 @@ int main(int argc, char** argv) {
     auto t_prefill = std::chrono::steady_clock::now();
 
     /* Decode loop */
-    for (uint32_t step = 0; step < max_tokens - 1; ++step) {
+    nf_session_state session_state = NF_SESSION_RUNNING;
+    for (uint32_t step = 0; step < max_tokens - 1 && !g_stop; ++step) {
         uint32_t step_idx = prefill_seq + step;
         int32_t last_tok = all_tokens.back();
 
@@ -211,10 +253,15 @@ int main(int argc, char** argv) {
         all_tokens.push_back(tok);
         engine.destroy_graph(sg.gid);
 
-        /* Stream output */
-        std::printf("%s", tokenizer.id_to_piece(tok).c_str());
+        /* Stream output + callback */
+        std::string piece = tokenizer.id_to_piece(tok);
+        std::printf("%s", piece.c_str());
         std::fflush(stdout);
+        if (stream_cb.on_token)
+            stream_cb.on_token(tok, piece.c_str(), stream_cb.userdata);
     }
+    session_state = g_stop ? NF_SESSION_IDLE : NF_SESSION_IDLE;
+    (void)session_state;
 
     auto t_end = std::chrono::steady_clock::now();
     std::printf("\n");

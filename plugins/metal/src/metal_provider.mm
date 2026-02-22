@@ -1705,6 +1705,291 @@ kernel void flash_attention_paged(
     for (uint d = 0; d < dim; ++d)
         out[out_base + d] = acc[d] * inv_l;
 }
+
+/* ---- Phase 34-A: GQA Flash Attention (native n_kv_heads != n_heads) ---- */
+/* Eliminates repeat-KV by computing Q→KV head mapping inline.
+ * pc.M = n_kv_heads, pc.step_idx = current position, pc.max_seq_len = cache capacity.
+ * Decode mode: single query token against KV cache.
+ * Prefill mode (step_idx==0): full causal attention. */
+
+kernel void flash_attention_gqa(
+        device const float* Q       [[buffer(0)]],
+        device const float* K_new   [[buffer(1)]],
+        device const float* V_new   [[buffer(2)]],
+        device float*       cache_k [[buffer(3)]],
+        device float*       cache_v [[buffer(4)]],
+        device float*       out     [[buffer(5)]],
+        constant PushConstants& pc  [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint head  = id.y;
+    uint q_pos = id.x;
+    uint dim   = pc.head_dim;
+    uint step  = pc.step_idx;
+    uint n_kv  = (pc.M > 0 && pc.M < pc.n_heads) ? pc.M : pc.n_heads;
+    uint kv_head = head * n_kv / pc.n_heads;
+
+    if (head >= pc.n_heads) return;
+
+    /* Prefill mode */
+    if (step == 0) {
+        if (q_pos >= pc.seq_len) return;
+        if (head < n_kv) {
+            for (uint d = 0; d < dim; ++d) {
+                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
+                cache_k[dst] = K_new[src];
+                cache_v[dst] = V_new[src];
+            }
+        }
+        float scale = rsqrt(float(dim));
+        float m_prev = NF_NEG_INF;
+        float l_prev = 0.0f;
+        float acc[NF_MAX_HEAD_DIM];
+        for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+        /* Tiled online softmax over causal positions */
+        for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                     * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+            dot *= scale;
+            float m_new = max(m_prev, dot);
+            float correction = exp(m_prev - m_new);
+            l_prev = l_prev * correction + exp(dot - m_new);
+            for (uint d = 0; d < dim; ++d) {
+                acc[d] = acc[d] * correction
+                       + exp(dot - m_new) * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+            }
+            m_prev = m_new;
+        }
+        float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            out[head * pc.seq_len * dim + q_pos * dim + d] = acc[d] * inv_l;
+        return;
+    }
+
+    /* Decode mode */
+    if (q_pos >= 1) return;
+    if (step >= pc.max_seq_len) return;
+
+    if (head < n_kv) {
+        for (uint d = 0; d < dim; ++d) {
+            cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
+            cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+        }
+    }
+
+    float scale = rsqrt(float(dim));
+    float m_prev = NF_NEG_INF;
+    float l_prev = 0.0f;
+    float acc[NF_MAX_HEAD_DIM];
+    for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+    for (uint k_pos = 0; k_pos <= step; ++k_pos) {
+        float dot = 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            dot += Q[head * dim + d]
+                 * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+        dot *= scale;
+        float m_new = max(m_prev, dot);
+        float correction = exp(m_prev - m_new);
+        l_prev = l_prev * correction + exp(dot - m_new);
+        for (uint d = 0; d < dim; ++d) {
+            acc[d] = acc[d] * correction
+                   + exp(dot - m_new) * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
+        }
+        m_prev = m_new;
+    }
+    float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
+    for (uint d = 0; d < dim; ++d)
+        out[head * dim + d] = acc[d] * inv_l;
+}
+
+/* FP16 variant */
+kernel void flash_attention_gqa_f16(
+        device const half*  Q       [[buffer(0)]],
+        device const half*  K_new   [[buffer(1)]],
+        device const half*  V_new   [[buffer(2)]],
+        device half*        cache_k [[buffer(3)]],
+        device half*        cache_v [[buffer(4)]],
+        device half*        out     [[buffer(5)]],
+        constant PushConstants& pc  [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint head  = id.y;
+    uint q_pos = id.x;
+    uint dim   = pc.head_dim;
+    uint step  = pc.step_idx;
+    uint n_kv  = (pc.M > 0 && pc.M < pc.n_heads) ? pc.M : pc.n_heads;
+    uint kv_head = head * n_kv / pc.n_heads;
+
+    if (head >= pc.n_heads) return;
+
+    if (step == 0) {
+        if (q_pos >= pc.seq_len) return;
+        if (head < n_kv) {
+            for (uint d = 0; d < dim; ++d) {
+                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
+                cache_k[dst] = K_new[src];
+                cache_v[dst] = V_new[src];
+            }
+        }
+        float scale = rsqrt(float(dim));
+        float m_prev = NF_NEG_INF;
+        float l_prev = 0.0f;
+        float acc[NF_MAX_HEAD_DIM];
+        for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+        for (uint k_pos = 0; k_pos <= q_pos; ++k_pos) {
+            float dot = 0.0f;
+            for (uint d = 0; d < dim; ++d)
+                dot += float(Q[head * pc.seq_len * dim + q_pos * dim + d])
+                     * float(cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
+            dot *= scale;
+            float m_new = max(m_prev, dot);
+            float correction = exp(m_prev - m_new);
+            l_prev = l_prev * correction + exp(dot - m_new);
+            for (uint d = 0; d < dim; ++d) {
+                acc[d] = acc[d] * correction
+                       + exp(dot - m_new) * float(cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
+            }
+            m_prev = m_new;
+        }
+        float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            out[head * pc.seq_len * dim + q_pos * dim + d] = half(acc[d] * inv_l);
+        return;
+    }
+
+    if (q_pos >= 1) return;
+    if (step >= pc.max_seq_len) return;
+
+    if (head < n_kv) {
+        for (uint d = 0; d < dim; ++d) {
+            cache_k[head * pc.max_seq_len * dim + step * dim + d] = K_new[head * dim + d];
+            cache_v[head * pc.max_seq_len * dim + step * dim + d] = V_new[head * dim + d];
+        }
+    }
+
+    float scale = rsqrt(float(dim));
+    float m_prev = NF_NEG_INF;
+    float l_prev = 0.0f;
+    float acc[NF_MAX_HEAD_DIM];
+    for (uint d = 0; d < dim; ++d) acc[d] = 0.0f;
+
+    for (uint k_pos = 0; k_pos <= step; ++k_pos) {
+        float dot = 0.0f;
+        for (uint d = 0; d < dim; ++d)
+            dot += float(Q[head * dim + d])
+                 * float(cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
+        dot *= scale;
+        float m_new = max(m_prev, dot);
+        float correction = exp(m_prev - m_new);
+        l_prev = l_prev * correction + exp(dot - m_new);
+        for (uint d = 0; d < dim; ++d) {
+            acc[d] = acc[d] * correction
+                   + exp(dot - m_new) * float(cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
+        }
+        m_prev = m_new;
+    }
+    float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
+    for (uint d = 0; d < dim; ++d)
+        out[head * dim + d] = half(acc[d] * inv_l);
+}
+
+/* ---- Phase 34-B: MoE Top-K Gating Kernel ---- */
+/* Softmax over n_experts, then selects top-K experts per token.
+ * Input: gate_logits [batch, n_experts]
+ * Output: expert_ids [batch, top_k] (int), expert_weights [batch, top_k] (float)
+ * pc.M = n_experts, pc.N = top_k, pc.seq_len = batch_size */
+
+kernel void moe_top_k_gating(
+        device const float* gate_logits  [[buffer(0)]],
+        device int*         expert_ids   [[buffer(1)]],
+        device float*       expert_weights [[buffer(2)]],
+        constant PushConstants& pc       [[buffer(15)]],
+        uint id [[thread_position_in_grid]]) {
+    uint batch_idx = id;
+    if (batch_idx >= pc.seq_len) return;
+
+    uint n_experts = pc.M;
+    uint top_k = pc.N;
+    if (top_k > 8) top_k = 8;
+
+    device const float* logits = gate_logits + batch_idx * n_experts;
+    device int*   out_ids = expert_ids + batch_idx * top_k;
+    device float* out_w   = expert_weights + batch_idx * top_k;
+
+    /* Softmax */
+    float max_val = logits[0];
+    for (uint i = 1; i < n_experts; ++i)
+        if (logits[i] > max_val) max_val = logits[i];
+
+    float probs[64];  /* max 64 experts */
+    float sum = 0.0f;
+    for (uint i = 0; i < n_experts && i < 64; ++i) {
+        probs[i] = exp(logits[i] - max_val);
+        sum += probs[i];
+    }
+    for (uint i = 0; i < n_experts && i < 64; ++i) probs[i] /= sum;
+
+    /* Top-K selection (simple insertion sort for small K) */
+    int sel_ids[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
+    float sel_probs[8] = {0,0,0,0,0,0,0,0};
+
+    for (uint i = 0; i < n_experts && i < 64; ++i) {
+        /* Find insertion point */
+        for (uint k = 0; k < top_k; ++k) {
+            if (probs[i] > sel_probs[k]) {
+                /* Shift down */
+                for (uint j = top_k - 1; j > k; --j) {
+                    sel_ids[j] = sel_ids[j-1];
+                    sel_probs[j] = sel_probs[j-1];
+                }
+                sel_ids[k] = int(i);
+                sel_probs[k] = probs[i];
+                break;
+            }
+        }
+    }
+
+    /* Renormalize selected weights */
+    float sel_sum = 0.0f;
+    for (uint k = 0; k < top_k; ++k) sel_sum += sel_probs[k];
+    for (uint k = 0; k < top_k; ++k) {
+        out_ids[k] = sel_ids[k];
+        out_w[k] = (sel_sum > 0.0f) ? (sel_probs[k] / sel_sum) : 0.0f;
+    }
+}
+
+/* ---- Phase 34-B: MoE Scatter-Gather Kernel ---- */
+/* Weighted sum of selected expert outputs.
+ * expert_outputs: [n_experts, dim], expert_ids: [batch, top_k],
+ * expert_weights: [batch, top_k], output: [batch, dim]
+ * pc.M = n_experts, pc.N = top_k, pc.K = dim, pc.seq_len = batch_size */
+
+kernel void moe_scatter_gather(
+        device const float* expert_outputs [[buffer(0)]],
+        device const int*   expert_ids     [[buffer(1)]],
+        device const float* expert_weights [[buffer(2)]],
+        device float*       output         [[buffer(3)]],
+        constant PushConstants& pc         [[buffer(15)]],
+        uint2 id [[thread_position_in_grid]]) {
+    uint batch_idx = id.y;
+    uint d = id.x;
+    if (batch_idx >= pc.seq_len || d >= pc.K) return;
+
+    uint top_k = pc.N;
+    float val = 0.0f;
+    for (uint k = 0; k < top_k; ++k) {
+        int eid = expert_ids[batch_idx * top_k + k];
+        if (eid < 0) continue;
+        float w = expert_weights[batch_idx * top_k + k];
+        val += w * expert_outputs[uint(eid) * pc.K + d];
+    }
+    output[batch_idx * pc.K + d] = val;
+}
 )";
 
 /* ================================================================== */
@@ -2739,6 +3024,123 @@ static nf_status dispatch_fused_dq4_linear(nf_provider_metal* prov, const char* 
     return NF_OK;
 }
 
+/* Phase 34-A: GQA flash attention dispatch */
+static nf_status dispatch_flash_attn_gqa(nf_provider_metal* prov, const char* op_name,
+        const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
+    if (n_in < 5 || n_out < 1) return NF_ERROR_INVALID_ARG;
+    auto* q_mb       = reinterpret_cast<MetalBuffer*>(inputs[0]);
+    auto* k_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[1]);
+    auto* v_new_mb   = reinterpret_cast<MetalBuffer*>(inputs[2]);
+    auto* cache_k_mb = reinterpret_cast<MetalBuffer*>(inputs[3]);
+    auto* cache_v_mb = reinterpret_cast<MetalBuffer*>(inputs[4]);
+    auto* out_mb     = reinterpret_cast<MetalBuffer*>(outputs[0]);
+    const uint8_t* pc = get_push_constants(inputs);
+    bool is_f16 = (out_mb->desc.dtype == NF_DTYPE_F16);
+    out_mb->gpu_done.store(false, std::memory_order_release);
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        [enc setComputePipelineState:prov->pso[is_f16 ? PSO_FLASH_ATTN_GQA_F16 : PSO_FLASH_ATTN_GQA]];
+        [enc setBuffer:q_mb->mtl_buffer       offset:0 atIndex:0];
+        [enc setBuffer:k_new_mb->mtl_buffer   offset:0 atIndex:1];
+        [enc setBuffer:v_new_mb->mtl_buffer   offset:0 atIndex:2];
+        [enc setBuffer:cache_k_mb->mtl_buffer offset:0 atIndex:3];
+        [enc setBuffer:cache_v_mb->mtl_buffer offset:0 atIndex:4];
+        [enc setBuffer:out_mb->mtl_buffer     offset:0 atIndex:5];
+        if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+        uint32_t seq_len = 1, n_heads = 1, step_idx = 0;
+        if (pc) {
+            std::memcpy(&seq_len,  pc,      sizeof(uint32_t));
+            std::memcpy(&n_heads,  pc + 4,  sizeof(uint32_t));
+            std::memcpy(&step_idx, pc + 32, sizeof(uint32_t));
+        }
+        uint32_t grid_x = (step_idx == 0) ? seq_len : 1;
+        [enc dispatchThreads:MTLSizeMake(grid_x, n_heads, 1)
+       threadsPerThreadgroup:MTLSizeMake(
+           MIN((NSUInteger)grid_x, (NSUInteger)16),
+           MIN((NSUInteger)n_heads, (NSUInteger)16), 1)];
+        [enc endEncoding];
+        uint32_t ec = grid_x * n_heads;
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            record_timing(cb, op_name, (uint8_t)out_mb->desc.dtype, ec);
+            out_mb->gpu_done.store(true, std::memory_order_release); out_mb->fence_cv.notify_all();
+        }];
+        [cmdBuf commit];
+    }
+    return NF_OK;
+}
+
+/* Phase 34-B: MoE top-K gating dispatch */
+static nf_status dispatch_moe_gate(nf_provider_metal* prov, const char* op_name,
+        const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
+    if (n_in < 1 || n_out < 2) return NF_ERROR_INVALID_ARG;
+    auto* logits_mb = reinterpret_cast<MetalBuffer*>(inputs[0]);
+    auto* ids_mb    = reinterpret_cast<MetalBuffer*>(outputs[0]);
+    auto* weights_mb = reinterpret_cast<MetalBuffer*>(outputs[1]);
+    const uint8_t* pc = get_push_constants(inputs);
+    ids_mb->gpu_done.store(false, std::memory_order_release);
+    weights_mb->gpu_done.store(false, std::memory_order_release);
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        [enc setComputePipelineState:prov->pso[PSO_MOE_GATE]];
+        [enc setBuffer:logits_mb->mtl_buffer  offset:0 atIndex:0];
+        [enc setBuffer:ids_mb->mtl_buffer     offset:0 atIndex:1];
+        [enc setBuffer:weights_mb->mtl_buffer offset:0 atIndex:2];
+        if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+        uint32_t batch = 1;
+        if (pc) std::memcpy(&batch, pc, sizeof(uint32_t));
+        NSUInteger tpg = prov->pso[PSO_MOE_GATE].maxTotalThreadsPerThreadgroup;
+        if (tpg > batch) tpg = batch;
+        [enc dispatchThreads:MTLSizeMake(batch, 1, 1) threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+        [enc endEncoding];
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            record_timing(cb, op_name, (uint8_t)ids_mb->desc.dtype, batch);
+            ids_mb->gpu_done.store(true, std::memory_order_release); ids_mb->fence_cv.notify_all();
+            weights_mb->gpu_done.store(true, std::memory_order_release); weights_mb->fence_cv.notify_all();
+        }];
+        [cmdBuf commit];
+    }
+    return NF_OK;
+}
+
+/* Phase 34-B: MoE scatter-gather dispatch */
+static nf_status dispatch_moe_scatter(nf_provider_metal* prov, const char* op_name,
+        const nf_buffer* inputs, uint32_t n_in, nf_buffer* outputs, uint32_t n_out) {
+    if (n_in < 3 || n_out < 1) return NF_ERROR_INVALID_ARG;
+    auto* expert_mb  = reinterpret_cast<MetalBuffer*>(inputs[0]);
+    auto* ids_mb     = reinterpret_cast<MetalBuffer*>(inputs[1]);
+    auto* weights_mb = reinterpret_cast<MetalBuffer*>(inputs[2]);
+    auto* out_mb     = reinterpret_cast<MetalBuffer*>(outputs[0]);
+    const uint8_t* pc = get_push_constants(inputs);
+    out_mb->gpu_done.store(false, std::memory_order_release);
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [prov->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+        [enc setComputePipelineState:prov->pso[PSO_MOE_SCATTER]];
+        [enc setBuffer:expert_mb->mtl_buffer  offset:0 atIndex:0];
+        [enc setBuffer:ids_mb->mtl_buffer     offset:0 atIndex:1];
+        [enc setBuffer:weights_mb->mtl_buffer offset:0 atIndex:2];
+        [enc setBuffer:out_mb->mtl_buffer     offset:0 atIndex:3];
+        if (pc) [enc setBytes:pc length:NF_MAX_PUSH_CONSTANTS atIndex:15];
+        uint32_t batch = 1, dim = 1;
+        if (pc) {
+            std::memcpy(&batch, pc, sizeof(uint32_t));
+            std::memcpy(&dim, pc + 28, sizeof(uint32_t));  /* pc.K = dim */
+        }
+        [enc dispatchThreads:MTLSizeMake(dim, batch, 1)
+       threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)dim, (NSUInteger)256), 1, 1)];
+        [enc endEncoding];
+        uint32_t ec = batch * dim;
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            record_timing(cb, op_name, (uint8_t)out_mb->desc.dtype, ec);
+            out_mb->gpu_done.store(true, std::memory_order_release); out_mb->fence_cv.notify_all();
+        }];
+        [cmdBuf commit];
+    }
+    return NF_OK;
+}
+
 /* ================================================================== */
 /*  Phase 29: Dispatch Map Initialization                               */
 /* ================================================================== */
@@ -2790,6 +3192,9 @@ static void init_dispatch_maps() {
         {"dequant_q4_0_linear",       dispatch_fused_dq4_linear},
         {"dequant_q4_0_linear_f16",   dispatch_fused_dq4_linear},
         {"flash_attention_paged",     dispatch_flash_attn_paged},
+        {"flash_attention_gqa",       dispatch_flash_attn_gqa},
+        {"moe_top_k_gating",         dispatch_moe_gate},
+        {"moe_scatter_gather",        dispatch_moe_scatter},
     };
 
     /* Register all dequant ops into the main dispatch map */

@@ -64,6 +64,10 @@ nf_add_test(NAME nf_qwen2_arch_test     TEST_NAME qwen2_arch       SOURCES qwen2
 nf_add_test(NAME nf_gemma_arch_test     TEST_NAME gemma_arch       SOURCES gemma_arch_test.cpp      MODEL)
 nf_add_test(NAME nf_mixtral_arch_test   TEST_NAME mixtral_arch     SOURCES mixtral_arch_test.cpp    MODEL)
 
+# Phase 34: New platform-independent tests
+nf_add_test(NAME nf_streaming_callback_test TEST_NAME streaming_callback SOURCES streaming_callback_test.cpp)
+nf_add_test(NAME nf_moe_routing_test    TEST_NAME moe_routing      SOURCES moe_routing_test.cpp)
+
 # ---- Standalone tests (no nf_core, custom includes) ----
 add_executable(nf_pso_registry_test pso_registry_test.cpp)
 target_include_directories(nf_pso_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/plugins/metal/src)
@@ -96,6 +100,9 @@ if(NF_PLUGIN_METAL)
     nf_add_test(NAME nf_sliding_window_test TEST_NAME sliding_window SOURCES sliding_window_test.cpp LINKS nf_plugin_metal)
     nf_add_test(NAME nf_fused_warmup_test  TEST_NAME fused_warmup   SOURCES fused_warmup_test.cpp  LINKS nf_plugin_metal MODEL)
     nf_add_test(NAME nf_paged_attn_test    TEST_NAME paged_attn     SOURCES paged_attn_test.cpp    LINKS nf_plugin_metal)
+
+    # Phase 34: GQA attention test
+    nf_add_test(NAME nf_gqa_attention_test  TEST_NAME gqa_attention  SOURCES gqa_attention_test.cpp  LINKS nf_plugin_metal)
 endif()
 
 # ------------------------------------------------------------------

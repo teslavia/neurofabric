@@ -44,7 +44,7 @@
 
 #define NF_ABI_VERSION_MAJOR 0
 #define NF_ABI_VERSION_MINOR 1
-#define NF_ABI_VERSION_PATCH 1
+#define NF_ABI_VERSION_PATCH 2
 
 /** Packed ABI version: 0x00MMNNPP */
 #define NF_ABI_VERSION \
@@ -85,8 +85,36 @@ typedef enum nf_status {
     NF_ERROR_PLUGIN_LOAD     = 5,
     NF_ERROR_DEVICE_LOST     = 6,
     NF_ERROR_UNSUPPORTED_OP  = 7,
+    /* Phase 34-F: Production error codes */
+    NF_ERROR_TIMEOUT         = 8,
+    NF_ERROR_INVALID_INPUT   = 9,
     NF_ERROR_INTERNAL        = 255
 } nf_status;
+
+/* ------------------------------------------------------------------ */
+/*  Phase 34-C: Streaming Token Callback                               */
+/* ------------------------------------------------------------------ */
+
+/** Callback invoked for each generated token during streaming decode. */
+typedef void (*nf_token_callback_fn)(int32_t token_id, const char* piece,
+                                      void* userdata);
+
+/** Session callback configuration (POD). */
+typedef struct nf_session_callbacks {
+    nf_token_callback_fn on_token;
+    void*                userdata;
+} nf_session_callbacks;
+
+/* ------------------------------------------------------------------ */
+/*  Phase 34-F: Session State Machine                                  */
+/* ------------------------------------------------------------------ */
+
+typedef enum nf_session_state {
+    NF_SESSION_IDLE      = 0,
+    NF_SESSION_RUNNING   = 1,
+    NF_SESSION_ERROR     = 2,
+    NF_SESSION_RECOVERED = 3
+} nf_session_state;
 
 /* ------------------------------------------------------------------ */
 /*  5. Data Types & Tensor Descriptor (POD)                            */

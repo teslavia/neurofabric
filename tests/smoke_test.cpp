@@ -9,7 +9,7 @@
 
 int main() {
     // Verify ABI version packing
-    static_assert(NF_ABI_VERSION == 0x000101,
+    static_assert(NF_ABI_VERSION == 0x000102,
                   "ABI version packing broken");
 
     // Verify tensor descriptor is POD and memcpy-safe
