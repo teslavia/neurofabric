@@ -44,7 +44,7 @@
 
 #define NF_ABI_VERSION_MAJOR 0
 #define NF_ABI_VERSION_MINOR 1
-#define NF_ABI_VERSION_PATCH 0
+#define NF_ABI_VERSION_PATCH 1
 
 /** Packed ABI version: 0x00MMNNPP */
 #define NF_ABI_VERSION \
