@@ -16,8 +16,8 @@
 #ifndef NF_CONTEXT_HUB_HPP
 #define NF_CONTEXT_HUB_HPP
 
-#include "neurofabric/TensorView.hpp"
-#include "neurofabric/neuro_scheduler_abi.h"
+#include "neurofabric/engine/TensorView.hpp"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
 
 #include <algorithm>
 #include <chrono>

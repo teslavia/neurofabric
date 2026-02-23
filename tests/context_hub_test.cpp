@@ -13,10 +13,10 @@
  *   8. Subtree eviction
  */
 
-#include "neurofabric/ContextHub.hpp"
-#include "neurofabric/TensorView.hpp"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
+#include "neurofabric/engine/ContextHub.hpp"
+#include "neurofabric/engine/TensorView.hpp"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
 
 #include <atomic>
 #include <barrier>

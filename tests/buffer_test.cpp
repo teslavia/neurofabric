@@ -7,7 +7,7 @@
  * cache_sync, export, slice, and TensorView RAII semantics.
  */
 
-#include "neurofabric/TensorView.hpp"
+#include "neurofabric/engine/TensorView.hpp"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>

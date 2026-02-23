@@ -10,10 +10,10 @@
  * Model config: vocab=32, dim=16, heads=4, head_dim=4, ff_dim=32, max_seq=32, n_layers=4
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 
 #include <cassert>
 #include <cmath>

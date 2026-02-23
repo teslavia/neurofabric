@@ -3,7 +3,7 @@
  * @brief IR parser, mmap weight loader, DAG instantiation
  */
 
-#include "neurofabric/GraphBuilder.hpp"
+#include "neurofabric/engine/GraphBuilder.hpp"
 #include "mmap_buffer.h"
 
 #include <cstring>

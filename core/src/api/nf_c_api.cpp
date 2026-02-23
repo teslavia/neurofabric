@@ -3,9 +3,9 @@
  * @brief C API implementation — Session wrapper, mock provider, FFI gateway
  */
 
-#include "neurofabric/nf_c_api.h"
-#include "neurofabric/PipelineEngine.hpp"
-#include "neurofabric/GraphBuilder.hpp"
+#include "neurofabric/abi/nf_c_api.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neurofabric/engine/GraphBuilder.hpp"
 
 #include <atomic>
 #include <chrono>

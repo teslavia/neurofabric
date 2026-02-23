@@ -8,8 +8,8 @@
 #ifndef NF_GRAPH_BUILDER_HPP
 #define NF_GRAPH_BUILDER_HPP
 
-#include "neurofabric/neuro_ir_format.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_ir_format.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 
 #include <cstdint>
 #include <functional>

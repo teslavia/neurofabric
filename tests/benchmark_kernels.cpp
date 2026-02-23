@@ -7,8 +7,8 @@
  * Built but NOT added to ctest — opt-in manual run only.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
 
 #include <cstdio>
 #include <cstdlib>

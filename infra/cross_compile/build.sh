@@ -6,7 +6,7 @@
 # Inside Docker:  runs cmake + make with cross-toolchain.
 #
 # Usage:
-#   bash tools/cross_compile/build.sh <board>
+#   bash infra/cross_compile/build.sh <board>
 #
 # Boards: rk3588, rpi4, ascend
 #
@@ -74,7 +74,7 @@ if [ "${IN_DOCKER:-}" != "1" ]; then
         -e BUILD_TYPE="${BUILD_TYPE}" \
         -e IN_DOCKER=1 \
         "${BOARD_DOCKER_IMAGE}" \
-        bash /workspace/tools/cross_compile/build.sh "${BOARD_NAME}"
+        bash /workspace/infra/cross_compile/build.sh "${BOARD_NAME}"
 
     echo ""
     echo "============================================"

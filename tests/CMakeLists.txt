@@ -52,7 +52,7 @@ nf_add_test(NAME nf_split_llama_mock_test TEST_NAME split_llama_mock SOURCES spl
 nf_add_test(NAME nf_session_test         TEST_NAME session          SOURCES session_test.cpp         GRAPH)
 nf_add_test(NAME nf_push_constants_test  TEST_NAME push_constants   SOURCES push_constants_test.cpp  GRAPH)
 
-# MODEL tests (need tools/model/ headers)
+# MODEL tests (need model/model/ headers)
 nf_add_test(NAME nf_tokenizer_test       TEST_NAME tokenizer        SOURCES tokenizer_test.cpp       MODEL)
 nf_add_test(NAME nf_arch_registry_test   TEST_NAME arch_registry    SOURCES arch_registry_test.cpp   MODEL)
 nf_add_test(NAME nf_model_config_test    TEST_NAME model_config     SOURCES model_config_test.cpp    MODEL)
@@ -74,7 +74,7 @@ target_include_directories(nf_pso_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/plug
 add_test(NAME pso_registry COMMAND nf_pso_registry_test)
 
 add_executable(nf_kv_cache_policy_test kv_cache_policy_test.cpp)
-target_include_directories(nf_kv_cache_policy_test PRIVATE ${CMAKE_SOURCE_DIR}/tools)
+target_include_directories(nf_kv_cache_policy_test PRIVATE ${CMAKE_SOURCE_DIR}/model)
 add_test(NAME kv_cache_policy COMMAND nf_kv_cache_policy_test)
 # ------------------------------------------------------------------
 # Metal-dependent tests

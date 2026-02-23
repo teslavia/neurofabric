@@ -15,12 +15,12 @@
  *   N2: decode_step(T4) → T5                  [LOCAL]
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_ir_format.h"
-#include "neurofabric/neuro_scheduler_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
-#include "neurofabric/GraphBuilder.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_ir_format.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neurofabric/engine/GraphBuilder.hpp"
 
 #include <atomic>
 #include <cmath>

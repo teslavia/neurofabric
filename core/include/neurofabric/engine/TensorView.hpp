@@ -20,7 +20,7 @@
 #ifndef NF_TENSOR_VIEW_HPP
 #define NF_TENSOR_VIEW_HPP
 
-#include "neurofabric/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
 
 #include <cassert>
 #include <cstddef>

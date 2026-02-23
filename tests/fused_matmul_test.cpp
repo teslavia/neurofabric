@@ -9,10 +9,10 @@
  *   4. F16 variant (M=64, N=128, K=256)
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 
 #include <cassert>
 #include <cmath>

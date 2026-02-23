@@ -3,7 +3,7 @@
 # Build → Deploy to device → Run remotely.
 #
 # Usage:
-#   bash tools/cross_compile/deploy.sh <board> [--skip-build] [--skip-deploy] [-- <remote_args>]
+#   bash infra/cross_compile/deploy.sh <board> [--skip-build] [--skip-deploy] [-- <remote_args>]
 #
 set -euo pipefail
 

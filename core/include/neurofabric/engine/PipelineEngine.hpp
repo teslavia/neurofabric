@@ -26,9 +26,9 @@
 #ifndef NF_PIPELINE_ENGINE_HPP
 #define NF_PIPELINE_ENGINE_HPP
 
-#include "neurofabric/neuro_scheduler_abi.h"
-#include "neurofabric/TensorView.hpp"
-#include "neurofabric/ProfileTrace.hpp"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
+#include "neurofabric/engine/TensorView.hpp"
+#include "neurofabric/engine/ProfileTrace.hpp"
 
 #include <atomic>
 #include <cassert>

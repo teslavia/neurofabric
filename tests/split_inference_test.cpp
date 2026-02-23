@@ -16,11 +16,11 @@
  *   (async GPU + fence)                                 send result back
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_network_protocol.h"
-#include "neurofabric/ContextHub.hpp"
-#include "neurofabric/TensorView.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_network_protocol.h"
+#include "neurofabric/engine/ContextHub.hpp"
+#include "neurofabric/engine/TensorView.hpp"
 
 #include <atomic>
 #include <chrono>

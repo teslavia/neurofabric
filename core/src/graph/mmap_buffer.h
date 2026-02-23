@@ -6,7 +6,7 @@
 #ifndef NF_MMAP_BUFFER_H
 #define NF_MMAP_BUFFER_H
 
-#include "neurofabric/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
 #include <atomic>
 #include <cstddef>
 

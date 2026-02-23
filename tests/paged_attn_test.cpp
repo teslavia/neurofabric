@@ -8,9 +8,9 @@
  *   3. PagedAttn_gqa_2h_1kv — GQA with 2 Q heads sharing 1 KV head
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 
 #include <cstdio>
 #include <cstdlib>

@@ -9,11 +9,11 @@
  * 5. Confirms weight buffer domain == NF_MEM_DOMAIN_MMAP
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_ir_format.h"
-#include "neurofabric/PipelineEngine.hpp"
-#include "neurofabric/GraphBuilder.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_ir_format.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neurofabric/engine/GraphBuilder.hpp"
 
 #include <atomic>
 #include <cstdio>

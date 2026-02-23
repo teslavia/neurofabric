@@ -96,6 +96,9 @@ endif()
 
 add_subdirectory(core/src/api)
 
+# Model layer (header-only interface library)
+add_subdirectory(model)
+
 if(NF_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -108,4 +111,5 @@ endif()
 option(NF_BUILD_TOOLS "Build CLI tools" ON)
 if(NF_BUILD_TOOLS)
     add_subdirectory(tools)
+    add_subdirectory(apps)
 endif()

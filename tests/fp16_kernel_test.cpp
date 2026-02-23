@@ -6,9 +6,9 @@
  * Tolerance: 1e-2 for half precision.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
 
 #include <cassert>
 #include <cmath>

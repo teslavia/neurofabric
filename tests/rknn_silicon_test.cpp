@@ -12,10 +12,10 @@
  * Links RKNN plugin directly (not dlopen) — same pattern as silicon_test.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 #include "graph/mmap_buffer.h"
 
 #include <atomic>

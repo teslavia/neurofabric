@@ -7,7 +7,7 @@
  * version, and register the provider vtable with the core scheduler.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
 #include "platform/plugin_loader_internal.h"
 
 #include <cstring>

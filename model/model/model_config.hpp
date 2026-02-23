@@ -14,9 +14,9 @@
 #ifndef NF_MODEL_CONFIG_HPP
 #define NF_MODEL_CONFIG_HPP
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/engine/PipelineEngine.hpp"
 #include "kv_cache_policy.hpp"
 
 #include <cstdint>

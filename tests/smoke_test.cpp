@@ -3,7 +3,7 @@
  * @brief Minimal compile + link smoke test for nf_core.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
 #include <cstdio>
 #include <cstring>
 

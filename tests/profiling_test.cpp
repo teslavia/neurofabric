@@ -17,10 +17,10 @@
  *   N2: decode(T4) → T5             [depends on N1]
  */
 
-#include "neurofabric/ProfileTrace.hpp"
-#include "neurofabric/PipelineEngine.hpp"
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_scheduler_abi.h"
+#include "neurofabric/engine/ProfileTrace.hpp"
+#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_scheduler_abi.h"
 
 #include <atomic>
 #include <chrono>

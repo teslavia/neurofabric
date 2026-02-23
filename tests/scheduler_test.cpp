@@ -7,8 +7,8 @@
  *   2. ContextHub: put/get with radix prefix matching, eviction
  */
 
-#include "neurofabric/PipelineEngine.hpp"
-#include "neurofabric/ContextHub.hpp"
+#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neurofabric/engine/ContextHub.hpp"
 #include <cstdio>
 #include <cstring>
 #include <atomic>

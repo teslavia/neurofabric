@@ -6,7 +6,7 @@ Usage:
     python3 autoregressive_inference.py <path-to-nfir>
 
 Example:
-    python3 ../tools/nf_compiler/export_nfir.py --preset split_llama_mock -o /tmp/split_llama_mock.nfir
+    python3 ../model/nf_compiler/export_nfir.py --preset split_llama_mock -o /tmp/split_llama_mock.nfir
     python3 autoregressive_inference.py /tmp/split_llama_mock.nfir
 """
 

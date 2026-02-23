@@ -19,9 +19,9 @@
  * awareness of networking in PipelineEngine.
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
-#include "neurofabric/neuro_buffer_abi.h"
-#include "neurofabric/neuro_network_protocol.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neurofabric/abi/neuro_network_protocol.h"
 #include "payload_serializer.h"
 
 #include <atomic>

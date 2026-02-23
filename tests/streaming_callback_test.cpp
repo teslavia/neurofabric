@@ -3,7 +3,7 @@
  * @brief Phase 34-C: Streaming token callback API test
  */
 
-#include "neurofabric/neuro_fabric_abi.h"
+#include "neurofabric/abi/neuro_fabric_abi.h"
 #include <cstdio>
 #include <cstring>
 #include <vector>

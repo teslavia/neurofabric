@@ -259,7 +259,7 @@ print(f"Latency: {session.last_step_us():.1f} µs")
 ### 4. C++ API
 
 ```cpp
-#include <neurofabric/PipelineEngine.hpp>
+#include <neurofabric/engine/PipelineEngine.hpp>
 #include "model/gguf_loader.hpp"
 #include "model/llama_dag_builder.hpp"
 

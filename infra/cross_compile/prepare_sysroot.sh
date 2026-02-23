@@ -4,7 +4,7 @@
 # Copies headers + libraries for cross-compilation.
 #
 # Usage:
-#   bash tools/cross_compile/prepare_sysroot.sh <board>
+#   bash infra/cross_compile/prepare_sysroot.sh <board>
 #
 set -euo pipefail
 
