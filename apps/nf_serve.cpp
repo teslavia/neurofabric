@@ -1,6 +1,6 @@
 /**
  * @file nf_serve.cpp
- * @brief Phase 34-E: OpenAI-compatible HTTP inference server
+ * @brief Phase 34-E / 44: OpenAI-compatible HTTP inference server
  *
  * Embedded HTTP/1.1 server with SSE streaming. No external dependencies.
  * Endpoints:
@@ -278,6 +278,9 @@ static void handle_completions(int fd, const HttpRequest& req, ServerState& stat
 
     std::lock_guard<std::mutex> lk(state.infer_mu);
 
+    /* Phase 44: NeuralOS schedule step before inference */
+    if (state.nos_runtime) state.nos_runtime->schedule_step();
+
     auto prompt_ids = state.tokenizer->encode(prompt);
     uint32_t prefill_seq = (uint32_t)prompt_ids.size();
     uint32_t V = state.model->vocab_size;
@@ -344,6 +347,8 @@ static void handle_completions(int fd, const HttpRequest& req, ServerState& stat
     for (int step = 0; step < max_tokens - 1 && !g_stop; ++step) {
         uint32_t step_idx = prefill_seq + step;
         int32_t last_tok = all_tokens.back();
+        /* Phase 44: CFS token accounting */
+        if (state.nos_runtime) state.nos_runtime->cfs()->account_tokens(0, 1, false);
         if (last_tok == (int32_t)state.tokenizer->eos_id()) break;
 
         void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
@@ -372,6 +377,9 @@ static void handle_completions(int fd, const HttpRequest& req, ServerState& stat
             send_sse_event(fd, chunk);
         }
     }
+
+    /* Phase 44: Complete request in NeuralOS */
+    if (state.nos_runtime) state.nos_runtime->complete(0);
 
     auto t_end = std::chrono::steady_clock::now();
     uint64_t decode_us = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_prefill).count();
@@ -449,7 +457,7 @@ static void usage(const char* prog) {
         "  --fp16       use FP16 inference\n"
         "  --paged      use paged KV cache\n"
         "  --arch NAME  override architecture\n"
-        "  --neuralOS   enable NeuralOS runtime\n",
+        "  --no-neuralOS disable NeuralOS runtime (default: auto with --paged)\n",
         prog);
 }
 
@@ -461,7 +469,7 @@ int main(int argc, char** argv) {
     int n_threads = 4;
     bool use_fp16 = false;
     bool use_paged = false;
-    bool use_neuralOS = false;
+    bool no_neuralOS = false;
     const char* arch_override = nullptr;
 
     for (int i = 2; i < argc; ++i) {
@@ -475,9 +483,12 @@ int main(int argc, char** argv) {
             use_paged = true;
         else if (std::strcmp(argv[i], "--arch") == 0 && i + 1 < argc)
             arch_override = argv[++i];
-        else if (std::strcmp(argv[i], "--neuralOS") == 0)
-            use_neuralOS = true;
+        else if (std::strcmp(argv[i], "--no-neuralOS") == 0)
+            no_neuralOS = true;
     }
+
+    /* Phase 44: NeuralOS auto-enable when paged KV is active */
+    bool use_neuralOS = use_paged && !no_neuralOS;
 
     std::signal(SIGINT, sig_handler);
     std::signal(SIGTERM, sig_handler);

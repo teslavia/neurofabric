@@ -16,6 +16,11 @@
 #include <vector>
 #include <unordered_map>
 
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 namespace neuralOS { namespace onnx {
 
 /* ================================================================== */
@@ -248,9 +253,12 @@ private:
                     g->name = r.read_string(static_cast<size_t>(len));
                     break;
                 }
-                case 5: { /* initializer */
+                case 5: { /* initializer (TensorProto) */
                     auto len = r.read_varint();
-                    /* Skip initializer parsing for now (weights) */
+                    auto sub = r.sub_reader(static_cast<size_t>(len));
+                    OnnxTensor tensor;
+                    parse_tensor(sub, static_cast<size_t>(len), &tensor);
+                    g->initializers.push_back(std::move(tensor));
                     r.skip(static_cast<size_t>(len));
                     break;
                 }
@@ -291,7 +299,96 @@ private:
             }
         }
     }
+
+    void parse_tensor(ProtobufReader& r, size_t end, OnnxTensor* t) {
+        size_t start = r.pos();
+        while (r.pos() - start < end && !r.at_end()) {
+            uint32_t tag = r.read_tag();
+            uint32_t field = tag >> 3;
+            uint32_t wt = tag & 0x7;
+
+            switch (field) {
+                case 1: { /* dims (repeated int64) */
+                    if (wt == LENGTH) {
+                        auto len = r.read_varint();
+                        size_t pend = r.pos() + static_cast<size_t>(len);
+                        while (r.pos() < pend)
+                            t->dims.push_back(static_cast<int64_t>(r.read_varint()));
+                    } else {
+                        t->dims.push_back(static_cast<int64_t>(r.read_varint()));
+                    }
+                    break;
+                }
+                case 2: /* data_type */
+                    t->data_type = static_cast<OnnxDataType>(r.read_varint());
+                    break;
+                case 4: { /* float_data (packed repeated float) */
+                    if (wt == LENGTH) {
+                        auto len = r.read_varint();
+                        size_t count = static_cast<size_t>(len) / 4;
+                        for (size_t i = 0; i < count; ++i) {
+                            float v = r.read_float();
+                            const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+                            t->raw_data.insert(t->raw_data.end(), p, p + 4);
+                        }
+                    } else {
+                        r.skip_field(wt);
+                    }
+                    break;
+                }
+                case 8: { /* name */
+                    auto len = r.read_varint();
+                    t->name = r.read_string(static_cast<size_t>(len));
+                    break;
+                }
+                case 13: { /* raw_data (bytes) */
+                    auto len = r.read_varint();
+                    t->raw_data = r.read_bytes(static_cast<size_t>(len));
+                    break;
+                }
+                default: r.skip_field(wt); break;
+            }
+        }
+    }
 };
+
+/* ================================================================== */
+/*  File I/O — load ONNX model from disk                               */
+/* ================================================================== */
+
+/** Load an ONNX model from a file path.
+ *  Returns true on success. Uses mmap on POSIX, read() fallback. */
+inline bool load_onnx_file(const char* path, OnnxModel* model) {
+    if (!path || !model) return false;
+
+#ifdef _WIN32
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return false; }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    size_t rd = fread(buf.data(), 1, buf.size(), f);
+    fclose(f);
+    if (rd != buf.size()) return false;
+    OnnxParser parser;
+    return parser.parse(buf.data(), buf.size(), model);
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return false; }
+    size_t sz = static_cast<size_t>(st.st_size);
+    void* mapped = mmap(nullptr, sz, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) return false;
+    OnnxParser parser;
+    bool ok = parser.parse(static_cast<const uint8_t*>(mapped), sz, model);
+    munmap(mapped, sz);
+    return ok;
+#endif
+}
 
 }} // namespace neuralOS::onnx
 

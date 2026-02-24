@@ -5,6 +5,7 @@
  * Phase 24: Tokenizer Integration & MatMul Optimization.
  * Phase 31: Multi-Architecture support (--arch flag, auto-detection).
  * Phase 34: Chat mode, streaming callback, error handling, signal handling.
+ * Phase 44: NeuralOS auto-enable with --paged, --no-neuralOS opt-out.
  *
  * Usage: nf_generate <gguf_path> "prompt text" [--max-tokens N] [--temperature T]
  *                    [--top-k K] [--top-p P] [--seed S] [--fp16] [--arch NAME]
@@ -30,7 +31,7 @@
 #include <string>
 #include <vector>
 
-/* Phase 43: NeuralOS runtime (optional) */
+/* Phase 44: NeuralOS runtime (auto with --paged) */
 #include "neuralOS/kernel/NeuralOSRuntime.hpp"
 #include "neuralOS/compiler/compiler_pipeline.hpp"
 
@@ -55,7 +56,7 @@ static void usage(const char* prog) {
         "  --arch NAME      override architecture (llama/mistral/phi3/qwen2/gemma/mixtral)\n"
         "  --chat           enable chat template mode\n"
         "  --chat-format F  chatml|llama|phi3 (default: auto)\n"
-        "  --neuralOS       enable NeuralOS runtime (CFS/vMMU/compiler)\n",
+        "  --no-neuralOS    disable NeuralOS runtime (default: auto with --paged)\n",
         prog);
 }
 
@@ -81,7 +82,7 @@ int main(int argc, char** argv) {
     bool use_fp16 = false;
     bool use_paged = false;
     bool chat_mode = false;
-    bool use_neuralOS = false;
+    bool no_neuralOS = false;
     const char* arch_override = nullptr;
     const char* chat_format_str = nullptr;
 
@@ -112,12 +113,15 @@ int main(int argc, char** argv) {
             chat_format_str = argv[++i];
         else if (std::strcmp(argv[i], "--arch") == 0 && i + 1 < argc)
             arch_override = argv[++i];
-        else if (std::strcmp(argv[i], "--neuralOS") == 0)
-            use_neuralOS = true;
+        else if (std::strcmp(argv[i], "--no-neuralOS") == 0)
+            no_neuralOS = true;
     }
     if (!has_seed) sp.seed = static_cast<uint32_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
     std::mt19937_64 rng(sp.seed);
+
+    /* Phase 44: NeuralOS auto-enable when paged KV is active */
+    bool use_neuralOS = use_paged && !no_neuralOS;
 
     /* Load model */
     auto* model = nf::gguf_open(gguf_path);
@@ -207,7 +211,7 @@ int main(int argc, char** argv) {
     if (!ctx) { std::fprintf(stderr, "Context creation failed\n"); return 1; }
     auto t_ctx = std::chrono::steady_clock::now();
 
-    /* Phase 43: Optional NeuralOS runtime */
+    /* Phase 44: NeuralOS runtime (auto with --paged, opt-out with --no-neuralOS) */
     std::unique_ptr<nf::PagedKVCache> nos_kv;
     std::unique_ptr<nf::RequestScheduler> nos_sched;
     std::unique_ptr<neuralOS::L2::NeuralOSRuntime> nos_runtime;
@@ -267,6 +271,7 @@ int main(int argc, char** argv) {
 
         /* Phase 43: NeuralOS schedule_step before each decode */
         if (nos_runtime) nos_runtime->schedule_step();
+        if (nos_runtime) nos_runtime->cfs()->account_tokens(0, 1, false);
 
         void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
         ((int32_t*)p)[0] = last_tok;
@@ -309,8 +314,9 @@ int main(int argc, char** argv) {
                  "decode: %.0f ms (%u tokens, %.1f tok/s)\n",
                  ctx_ms, prefill_ms, decode_ms, n_generated, tps);
 
-    /* Phase 43: NeuralOS runtime stats + compiler pipeline */
+    /* Phase 44: NeuralOS runtime stats + compiler pipeline */
     if (nos_runtime) {
+        nos_runtime->complete(0);  /* mark the single request complete */
         auto& st = nos_runtime->stats();
         std::fprintf(stderr, "[nf_generate] NeuralOS: submitted=%llu completed=%llu "
                      "preempted=%llu pages_out=%u prefix_hits=%u\n",
@@ -319,13 +325,32 @@ int main(int argc, char** argv) {
                      (unsigned long long)st.total_preempted,
                      st.pages_out, st.prefix_hits);
 
-        /* Run compiler pipeline on a mock graph for stats */
-        neuralOS::L1::NfirHighGraph mock_graph;
+        /* CompilerPipeline stats on step graph structure */
+        neuralOS::L1::NfirHighGraph ir_graph;
+        /* Build a representative IR from the last step graph */
+        neuralOS::L1::NfirHighOp embed_op;
+        embed_op.kind = neuralOS::L1::HighOpKind::EMBEDDING;
+        embed_op.name = "token_embed";
+        ir_graph.add_op(embed_op);
+        for (uint32_t l = 0; l < model->n_layers; ++l) {
+            neuralOS::L1::NfirHighOp attn;
+            attn.kind = neuralOS::L1::HighOpKind::ATTENTION;
+            attn.name = "layer_" + std::to_string(l) + "_attn";
+            ir_graph.add_op(attn);
+            neuralOS::L1::NfirHighOp ffn;
+            ffn.kind = neuralOS::L1::HighOpKind::FFN_BLOCK;
+            ffn.name = "layer_" + std::to_string(l) + "_ffn";
+            ir_graph.add_op(ffn);
+        }
+        /* Wire edges: embed→attn0→ffn0→attn1→ffn1→... */
+        for (uint32_t i = 0; i + 1 < ir_graph.num_ops(); ++i)
+            ir_graph.add_edge(i, i + 1);
+
         neuralOS::L1::CompilerPipeline compiler;
-        auto cr = compiler.run(&mock_graph);
-        std::fprintf(stderr, "[nf_generate] Compiler: removed=%u merged=%u "
+        auto cr = compiler.run(&ir_graph);
+        std::fprintf(stderr, "[nf_generate] Compiler: ops=%u removed=%u merged=%u "
                      "shapes=%u fusions=%u\n",
-                     cr.ops_removed, cr.ops_merged,
+                     ir_graph.num_ops(), cr.ops_removed, cr.ops_merged,
                      cr.shapes_inferred, cr.fusions_found);
     }
 

@@ -4,12 +4,14 @@
  *
  * Phase 38.1: Manages compute node registration, topology discovery,
  * subgraph assignment, and health monitoring.
+ * Phase 44: dispatch/collect via ControlPlane + DataPlane integration.
  */
 
 #ifndef NEURALOS_L5_MESH_COORDINATOR_HPP
 #define NEURALOS_L5_MESH_COORDINATOR_HPP
 
 #include "neuralOS/mesh/topology.hpp"
+#include "neuralOS/mesh/async_dataflow.hpp"
 #include "neuralOS/kernel/VirtualBus.hpp"
 
 #include <chrono>
@@ -109,6 +111,52 @@ public:
         return bus_.split_graph(task_ids, task_flops);
     }
 
+    /* ---- Subgraph Dispatch (via DataPlane) ----------------------------- */
+
+    /** Dispatch a subgraph to a remote node.
+     *  Returns a DataHandle ID for tracking the result. */
+    uint64_t dispatch_subgraph(uint32_t node_id,
+                               const std::vector<uint32_t>& task_ids,
+                               const void* payload, uint64_t payload_bytes) {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = nodes_.find(node_id);
+        if (it == nodes_.end()) return 0;
+
+        /* Create async handle for the result */
+        uint64_t handle = control_.dispatch_async(
+            0 /* coordinator */, node_id,
+            "subgraph_result_" + std::to_string(node_id),
+            payload_bytes);
+
+        /* Send via data plane */
+        data_.transfer(0, node_id, payload, payload_bytes);
+        ++dispatches_;
+        return handle;
+    }
+
+    /** Collect result from a dispatched subgraph.
+     *  Returns true if result is available. */
+    bool collect_result(uint64_t handle_id, void** out_data) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!control_.is_resolved(handle_id)) return false;
+        /* In real impl, data_ptr would be set by transport callback */
+        return true;
+    }
+
+    /** Resolve a dispatch handle (called when remote result arrives) */
+    void resolve_dispatch(uint64_t handle_id, void* data) {
+        std::lock_guard<std::mutex> lk(mu_);
+        control_.resolve(handle_id, data);
+    }
+
+    /** Set transport callback for data plane */
+    void set_transport(DataPlane::TransportCallback cb) {
+        data_.set_transport(std::move(cb));
+    }
+
+    uint32_t num_dispatches() const { return dispatches_; }
+    uint32_t num_transfers() const { return data_.num_transfers(); }
+
     /* ---- Health Monitoring ---------------------------------------- */
 
     void heartbeat(uint32_t node_id, float load_factor = 0.0f) {
@@ -174,6 +222,9 @@ private:
     std::unordered_map<uint32_t, NodeDescriptor> nodes_;
     std::unordered_map<uint32_t, NodeHealth>    health_;
     L2::VirtualBus                              bus_;
+    ControlPlane control_;
+    DataPlane    data_;
+    uint32_t     dispatches_ = 0;
 };
 
 }} // namespace neuralOS::L5

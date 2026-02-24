@@ -1,6 +1,6 @@
 /**
  * @file nf_node_cli.cpp
- * @brief Phase 12 — Universal Coordinator/Worker CLI
+ * @brief Phase 12 / Phase 44 — Universal Coordinator/Worker CLI
  *
  * Single binary, three modes:
  *   --mode=local   Load .nfir, execute entire DAG locally via PipelineEngine
@@ -9,6 +9,7 @@
  *
  * The local mode is the E2E smoke test: Python AOT → .nfir → GraphBuilder → DAG → verify.
  * Coordinator/worker modes reuse the Phase 11 wire protocol (nf_frame_header + nf_tensor_wire).
+ * Phase 44: heartbeat (PING/PONG) between coordinator and worker.
  */
 
 #include "neuralOS/ddi/neuro_fabric_abi.h"
@@ -19,6 +20,7 @@
 #include "neuralOS/kernel/PipelineEngine.hpp"
 #include "neuralOS/kernel/GraphBuilder.hpp"
 #include "neuralOS/kernel/ContextHub.hpp"
+#include "neuralOS/mesh/mesh_coordinator.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -304,6 +306,21 @@ static int run_coord(const char* nfir_path, const char* worker_host,
         ::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
+    /* Phase 44: Send heartbeat PING before dispatching tasks */
+    {
+        nf_frame_header hb{};
+        hb.magic   = NF_PROTO_MAGIC;
+        hb.version = NF_PROTO_VERSION;
+        hb.opcode  = static_cast<uint8_t>(NF_OP_PING);
+        hb.header_crc32 = nf_frame_compute_crc(&hb);
+        send_all(sock, &hb, sizeof(hb));
+        /* Read heartbeat PONG */
+        nf_frame_header ack{};
+        recv_all(sock, &ack, sizeof(ack));
+        if (ack.opcode == static_cast<uint8_t>(NF_OP_PONG))
+            std::fprintf(stderr, "[coord] worker heartbeat OK\n");
+    }
+
     /* Create engine with mock local + network remote provider */
     nf::PipelineEngine engine(2);
 
@@ -502,6 +519,16 @@ static int run_worker(uint16_t port) {
             if (req.opcode == NF_OP_SHUTDOWN) {
                 std::printf("[worker] shutdown requested\n");
                 done = true; break;
+            }
+            if (req.opcode == NF_OP_PING) {
+                /* Respond with heartbeat PONG */
+                nf_frame_header pong{};
+                pong.magic   = NF_PROTO_MAGIC;
+                pong.version = NF_PROTO_VERSION;
+                pong.opcode  = static_cast<uint8_t>(NF_OP_PONG);
+                pong.header_crc32 = nf_frame_compute_crc(&pong);
+                send_all(conn, &pong, sizeof(pong));
+                continue;
             }
             if (req.opcode != NF_OP_TASK_SUBMIT) break;
 

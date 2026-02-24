@@ -199,6 +199,23 @@ nf_add_test(NAME nf_cxl_memory_test       TEST_NAME cxl_memory        SOURCES me
 nf_add_test(NAME nf_dataplane_transport_test TEST_NAME dataplane_transport SOURCES mesh/dataplane_transport_test.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
 
+nf_add_test(NAME nf_mesh_e2e_test          TEST_NAME mesh_e2e           SOURCES mesh/mesh_e2e_test.cpp
+    INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
+
+# ------------------------------------------------------------------
+# Phase 44: E2E NeuralOS kernel path test
+# ------------------------------------------------------------------
+
+nf_add_test(NAME nf_e2e_neuralOS_test      TEST_NAME e2e_neuralOS       SOURCES kernel/e2e_neuralOS_test.cpp  MODEL
+    INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
+
+# ------------------------------------------------------------------
+# Phase 44: ONNX E2E test
+# ------------------------------------------------------------------
+
+nf_add_test(NAME nf_onnx_e2e_test          TEST_NAME onnx_e2e           SOURCES compiler/onnx_e2e_test.cpp
+    INCLUDES ${CMAKE_SOURCE_DIR}/core/include ${CMAKE_SOURCE_DIR}/model/nf_compiler)
+
 # ------------------------------------------------------------------
 # driver — Metal-dependent tests
 # ------------------------------------------------------------------

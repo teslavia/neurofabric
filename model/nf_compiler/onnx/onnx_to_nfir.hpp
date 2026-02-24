@@ -2,7 +2,7 @@
  * @file onnx_to_nfir.hpp
  * @brief NeuralOS L1 — ONNX Graph → NfirHighGraph Converter
  *
- * Phase 37.4: Converts parsed OnnxGraph to NfirHighGraph.
+ * Phase 37.4 / 44: Converts parsed OnnxGraph to NfirHighGraph.
  */
 
 #ifndef NEURALOS_ONNX_TO_NFIR_HPP
@@ -34,6 +34,22 @@ inline bool onnx_to_nfir(const OnnxGraph& onnx, L1::NfirHighGraph* out) {
         tensor_map[name] = id;
         return id;
     };
+
+    /* Process initializers (weights) → NfirTensorRef with size_bytes */
+    for (auto& init : onnx.initializers) {
+        auto& t = out->tensors[get_or_create_tensor(init.name)];
+        t.size_bytes = init.raw_data.size();
+        /* Map ONNX dtype → nf_dtype (simplified) */
+        switch (init.data_type) {
+            case ONNX_FLOAT:   t.dtype = 1; break;  /* NF_DTYPE_F32 */
+            case ONNX_FLOAT16: t.dtype = 2; break;  /* NF_DTYPE_F16 */
+            case ONNX_INT8:    t.dtype = 3; break;  /* NF_DTYPE_I8 */
+            default:           t.dtype = 0; break;
+        }
+        t.ndim = static_cast<uint8_t>(init.dims.size());
+        for (uint8_t d = 0; d < t.ndim && d < 8; ++d)
+            t.shape[d] = static_cast<uint64_t>(init.dims[d] >= 0 ? init.dims[d] : 0);
+    }
 
     /* Map ONNX node index → NFIR op ID */
     std::unordered_map<uint32_t, uint32_t> op_map;
