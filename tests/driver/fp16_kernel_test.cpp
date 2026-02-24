@@ -184,13 +184,19 @@ static void test_linear_tiled_f16() {
     nf_buffer b_buf = alloc_buf(NF_DTYPE_F16, K * N * 2, &b_ops);
     nf_buffer out_buf = alloc_buf(NF_DTYPE_F16, M * N * 2, &out_ops);
 
-    std::vector<float> a(M * K), b(K * N), ref(M * N, 0.0f);
+    std::vector<float> a(M * K), b_logical(K * N), ref(M * N, 0.0f);
     for (size_t i = 0; i < M * K; ++i) a[i] = ((float)(i % 7) - 3.0f) * 0.1f;
-    for (size_t i = 0; i < K * N; ++i) b[i] = ((float)(i % 5) - 2.0f) * 0.1f;
+    for (size_t i = 0; i < K * N; ++i) b_logical[i] = ((float)(i % 5) - 2.0f) * 0.1f;
     for (uint32_t r = 0; r < M; ++r)
         for (uint32_t c = 0; c < N; ++c)
             for (uint32_t k = 0; k < K; ++k)
-                ref[r * N + c] += a[r * K + k] * b[k * N + c];
+                ref[r * N + c] += a[r * K + k] * b_logical[k * N + c];
+
+    /* Transpose B to [N,K] layout (GGUF convention) for GPU upload */
+    std::vector<float> b(N * K);
+    for (uint32_t n = 0; n < N; ++n)
+        for (uint32_t k = 0; k < K; ++k)
+            b[n * K + k] = b_logical[k * N + n];
 
     fill_f16(a_buf, a_ops, a.data(), M * K);
     fill_f16(b_buf, b_ops, b.data(), K * N);

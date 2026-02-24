@@ -1139,9 +1139,9 @@ inline LlamaContextPtr create_llama_context(
 
     ctx->token_buf  = llama_alloc_buf(prov, mem_vt, NF_DTYPE_I32,
                                        S * sizeof(int32_t));
-    /* Logits always F32 (sampler needs float) */
-    ctx->logits     = llama_alloc_buf(prov, mem_vt, NF_DTYPE_F32,
-                                       S * V * sizeof(float));
+    /* Logits: match activation dtype so linear kernel writes correct type */
+    ctx->logits     = llama_alloc_buf(prov, mem_vt, act_dt,
+                                       S * V * act_elem);
     ctx->argmax_out = llama_alloc_buf(prov, mem_vt, NF_DTYPE_I32,
                                        S * sizeof(int32_t));
 

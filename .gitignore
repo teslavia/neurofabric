@@ -24,6 +24,7 @@ cmake-build-*/
 CLAUDE.md
 .claudeignore
 AGENTS.md
+cheeky-doodling-star.md
 
 MEMORY.md
 model/nf_compiler/__pycache__/

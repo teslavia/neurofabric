@@ -302,21 +302,27 @@ static void test_linear_tiled() {
 
     constexpr uint32_t M = 64, N = 48, K = 32;
 
-    /* Generate deterministic A[M×K] and B[K×N] */
-    std::vector<float> A(M * K), B(K * N), C_ref(M * N, 0.0f);
+    /* Generate deterministic A[M×K] and B_logical[K×N] */
+    std::vector<float> A(M * K), B_logical(K * N), C_ref(M * N, 0.0f);
     for (uint32_t i = 0; i < M * K; ++i)
         A[i] = (float)(i % 17) * 0.1f - 0.8f;
     for (uint32_t i = 0; i < K * N; ++i)
-        B[i] = (float)(i % 13) * 0.15f - 0.9f;
+        B_logical[i] = (float)(i % 13) * 0.15f - 0.9f;
 
-    /* CPU reference matmul */
+    /* CPU reference matmul: A[M,K] × B[K,N] */
     for (uint32_t r = 0; r < M; ++r)
         for (uint32_t c = 0; c < N; ++c) {
             float acc = 0.0f;
             for (uint32_t k = 0; k < K; ++k)
-                acc += A[r * K + k] * B[k * N + c];
+                acc += A[r * K + k] * B_logical[k * N + c];
             C_ref[r * N + c] = acc;
         }
+
+    /* Transpose B to [N,K] layout (GGUF convention) for GPU upload */
+    std::vector<float> B(N * K);
+    for (uint32_t n = 0; n < N; ++n)
+        for (uint32_t k = 0; k < K; ++k)
+            B[n * K + k] = B_logical[k * N + n];
 
     /* Allocate Metal buffers */
     nf_tensor_desc a_desc = make_desc(NF_DTYPE_F32, M * K * sizeof(float));
@@ -408,19 +414,25 @@ static void test_dequant_linear_pipeline() {
     float dequant_ref[32];
     ref_dequant_q4_0(&block, dequant_ref);
 
-    /* B matrix [32×4] */
-    std::vector<float> B(K * N);
+    /* B matrix logical [32×4] */
+    std::vector<float> B_logical(K * N);
     for (uint32_t i = 0; i < K * N; ++i)
-        B[i] = (i % 5) * 0.2f;
+        B_logical[i] = (i % 5) * 0.2f;
 
     /* CPU reference matmul */
     float c_ref[N];
     for (uint32_t c = 0; c < N; ++c) {
         float acc = 0.0f;
         for (uint32_t k = 0; k < K; ++k)
-            acc += dequant_ref[k] * B[k * N + c];
+            acc += dequant_ref[k] * B_logical[k * N + c];
         c_ref[c] = acc;
     }
+
+    /* Transpose B to [N,K] layout (GGUF convention) for GPU upload */
+    std::vector<float> B(N * K);
+    for (uint32_t n = 0; n < N; ++n)
+        for (uint32_t k = 0; k < K; ++k)
+            B[n * K + k] = B_logical[k * N + n];
 
     /* Allocate Metal buffers */
     nf_tensor_desc q_desc = make_desc(NF_DTYPE_Q4_0, sizeof(block));

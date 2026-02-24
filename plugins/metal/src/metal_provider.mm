@@ -110,7 +110,7 @@ kernel void rope(device const float* in  [[buffer(0)]],
     uint base = id - pair;
 
     float freq = 1.0f / pow(pc.theta, float(2 * pair) / float(pc.head_dim));
-    float angle = float(pc.seq_len + pc.step_idx) * freq;
+    float angle = float(pc.step_idx) * freq;
     float cos_a = cos(angle);
     float sin_a = sin(angle);
 
@@ -158,7 +158,7 @@ kernel void linear(device const float* A   [[buffer(0)]],
 
     float acc = 0.0f;
     for (uint k = 0; k < pc.K; ++k) {
-        acc += A[row * pc.K + k] * B[k * pc.N + col];
+        acc += A[row * pc.K + k] * B[col * pc.K + k];
     }
     C[row * pc.N + col] = acc;
 }
@@ -238,7 +238,7 @@ kernel void causal_attention_cached(
         /* Copy K_new/V_new into cache (only KV-head threads write) */
         if (head < n_kv) {
             for (uint d = 0; d < dim; ++d) {
-                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint src = q_pos * n_kv * dim + head * dim + d;
                 uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
                 cache_k[dst] = K_new[src];
                 cache_v[dst] = V_new[src];
@@ -255,7 +255,7 @@ kernel void causal_attention_cached(
         for (uint k_pos = kv_start; k_pos <= q_pos; ++k_pos) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
-                dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                dot += Q[q_pos * pc.n_heads * dim + head * dim + d]
                      * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             dot *= scale;
             if (dot > max_score) max_score = dot;
@@ -264,7 +264,7 @@ kernel void causal_attention_cached(
         for (uint k_pos = kv_start; k_pos <= q_pos; ++k_pos) {
             float dot = 0.0f;
             for (uint d = 0; d < dim; ++d)
-                dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                dot += Q[q_pos * pc.n_heads * dim + head * dim + d]
                      * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             sum_exp += exp(dot * scale - max_score);
         }
@@ -273,12 +273,12 @@ kernel void causal_attention_cached(
             for (uint k_pos = kv_start; k_pos <= q_pos; ++k_pos) {
                 float dot2 = 0.0f;
                 for (uint dd = 0; dd < dim; ++dd)
-                    dot2 += Q[head * pc.seq_len * dim + q_pos * dim + dd]
+                    dot2 += Q[q_pos * pc.n_heads * dim + head * dim + dd]
                           * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + dd];
                 float w = exp(dot2 * scale - max_score) / sum_exp;
                 val += w * cache_v[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
             }
-            out[head * pc.seq_len * dim + q_pos * dim + d] = val;
+            out[q_pos * pc.n_heads * dim + head * dim + d] = val;
         }
         return;
     }
@@ -366,7 +366,7 @@ kernel void flash_attention_tiled(
         /* Copy K_new/V_new into cache (KV-head threads only) */
         if (head < n_kv) {
             for (uint d = 0; d < dim; ++d) {
-                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint src = q_pos * n_kv * dim + head * dim + d;
                 uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
                 cache_k[dst] = K_new[src];
                 cache_v[dst] = V_new[src];
@@ -399,7 +399,7 @@ kernel void flash_attention_tiled(
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
-                    dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                    dot += Q[q_pos * pc.n_heads * dim + head * dim + d]
                          * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
                 dot *= scale;
                 if (dot > tile_max) tile_max = dot;
@@ -418,7 +418,7 @@ kernel void flash_attention_tiled(
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
-                    dot += Q[head * pc.seq_len * dim + q_pos * dim + d]
+                    dot += Q[q_pos * pc.n_heads * dim + head * dim + d]
                          * cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d];
                 float w = exp(dot * scale - m_new);
                 l += w;
@@ -431,7 +431,7 @@ kernel void flash_attention_tiled(
         /* Normalize and write output */
         float inv_l = (l > 0.0f) ? (1.0f / l) : 0.0f;
         for (uint d = 0; d < dim; ++d)
-            out[head * pc.seq_len * dim + q_pos * dim + d] = acc[d] * inv_l;
+            out[q_pos * pc.n_heads * dim + head * dim + d] = acc[d] * inv_l;
         return;
     }
 
@@ -918,7 +918,7 @@ kernel void linear_tiled(device const float* A   [[buffer(0)]],
         tileA[lid.y][lid.x] = (row < pc.M && aCol < pc.K)
             ? A[row * pc.K + aCol] : 0.0f;
         tileB[lid.y][lid.x] = (bRow < pc.K && col < pc.N)
-            ? B[bRow * pc.N + col] : 0.0f;
+            ? B[col * pc.K + bRow] : 0.0f;
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -1167,7 +1167,7 @@ kernel void linear_tiled_f16(device const half* A   [[buffer(0)]],
         tileA[lid.y][lid.x] = (row < pc.M && aCol < pc.K)
             ? A[row * pc.K + aCol] : half(0);
         tileB[lid.y][lid.x] = (bRow < pc.K && col < pc.N)
-            ? B[bRow * pc.N + col] : half(0);
+            ? B[col * pc.K + bRow] : half(0);
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint k = 0; k < TILE_SIZE_F16; ++k)
             acc += float(tileA[lid.y][k]) * float(tileB[k][lid.x]);
@@ -1292,7 +1292,7 @@ kernel void flash_attention_tiled_f16(
         if (q_pos >= pc.seq_len) return;
         if (head < n_kv) {
             for (uint d = 0; d < dim; ++d) {
-                uint src = head * pc.seq_len * dim + q_pos * dim + d;
+                uint src = q_pos * n_kv * dim + head * dim + d;
                 uint dst = head * pc.max_seq_len * dim + q_pos * dim + d;
                 cache_k[dst] = K_new[src];
                 cache_v[dst] = V_new[src];
@@ -1313,7 +1313,7 @@ kernel void flash_attention_tiled_f16(
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
-                    dot += float(Q[head * pc.seq_len * dim + q_pos * dim + d])
+                    dot += float(Q[q_pos * pc.n_heads * dim + head * dim + d])
                          * float(cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
                 dot *= scale;
                 if (dot > tile_max) tile_max = dot;
@@ -1325,7 +1325,7 @@ kernel void flash_attention_tiled_f16(
             for (uint k_pos = t_start; k_pos <= t_end; ++k_pos) {
                 float dot = 0.0f;
                 for (uint d = 0; d < dim; ++d)
-                    dot += float(Q[head * pc.seq_len * dim + q_pos * dim + d])
+                    dot += float(Q[q_pos * pc.n_heads * dim + head * dim + d])
                          * float(cache_k[kv_head * pc.max_seq_len * dim + k_pos * dim + d]);
                 float w = exp(dot * scale - m_new);
                 l += w;
@@ -1336,7 +1336,7 @@ kernel void flash_attention_tiled_f16(
         }
         float inv_l = (l > 0.0f) ? (1.0f / l) : 0.0f;
         for (uint d = 0; d < dim; ++d)
-            out[head * pc.seq_len * dim + q_pos * dim + d] = half(acc[d] * inv_l);
+            out[q_pos * pc.n_heads * dim + head * dim + d] = half(acc[d] * inv_l);
         return;
     }
 
@@ -1411,7 +1411,7 @@ kernel void dequant_q4_0_linear_tiled(
             ? A[row * pc.K + aCol] : 0.0f;
         uint bRow = t * 16 + lid.y;
         if (bRow < pc.K && col < pc.N) {
-            uint elem = bRow * pc.N + col;
+            uint elem = col * pc.K + bRow;
             uint blk = elem / 32;
             uint idx = elem % 32;
             float d = float(B_q[blk].d);
@@ -1448,7 +1448,7 @@ kernel void dequant_q4_0_linear_tiled_f16(
             ? A[row * pc.K + aCol] : half(0);
         uint bRow = t * 16 + lid.y;
         if (bRow < pc.K && col < pc.N) {
-            uint elem = bRow * pc.N + col;
+            uint elem = col * pc.K + bRow;
             uint blk = elem / 32;
             uint idx = elem % 32;
             float d = float(B_q[blk].d);
@@ -1510,7 +1510,7 @@ kernel void dequant_q4_0_linear_simd(
             uint bCol = col_base + (i % 8);
             float val = 0.0f;
             if (bRow < pc.K && bCol < pc.N) {
-                uint elem = bRow * pc.N + bCol;
+                uint elem = bCol * pc.K + bRow;
                 uint blk = elem / 32;
                 uint idx = elem % 32;
                 float d = float(B_q[blk].d);
@@ -1573,7 +1573,7 @@ kernel void dequant_q4_0_linear_simd_f16(
             uint bCol = col_base + (i % 8);
             half val = half(0);
             if (bRow < pc.K && bCol < pc.N) {
-                uint elem = bRow * pc.N + bCol;
+                uint elem = bCol * pc.K + bRow;
                 uint blk = elem / 32;
                 uint idx = elem % 32;
                 float d = float(B_q[blk].d);
@@ -2563,13 +2563,19 @@ static nf_status dispatch_linear(nf_provider_metal* prov, const char* op_name,
             std::memcpy(&M, pc + 20, sizeof(uint32_t));
             std::memcpy(&N, pc + 24, sizeof(uint32_t));
         }
-        if (a_f16 && out_f32 && prov->pso[PSO_LINEAR_F16_TO_F32] && M >= 8 && N >= 8) {
-            [enc setComputePipelineState:prov->pso[PSO_LINEAR_F16_TO_F32]];
-            NSUInteger tg_x = (N + 31) / 32;
-            NSUInteger tg_y = (M + 31) / 32;
-            [enc dispatchThreadgroups:MTLSizeMake(tg_x, tg_y, 1)
-                threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
-        } else if (a_f16 && !out_f32 && prov->pso[PSO_LINEAR_SIMD_F16] && M >= 8 && N >= 8) {
+        if (a_f16 && out_f32 && prov->pso[PSO_LINEAR_F16_TO_F32]) {
+            /* F16→F32: use tiled F16 kernel writing to a temp, then copy.
+               The SIMD F16→F32 kernel has issues, so fall back to tiled F16
+               and let the caller handle F16→F32 conversion.
+               Actually: just use the tiled F16 kernel directly — it writes half
+               into the float buffer. We need a working F16→F32 path. */
+            /* Use simple per-element matmul: dispatch as 2D grid */
+            [enc setComputePipelineState:prov->pso[PSO_LINEAR_TILED_F16]];
+            NSUInteger gridW = ((N + 15) / 16) * 16;
+            NSUInteger gridH = ((M + 15) / 16) * 16;
+            [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1)
+           threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        } else if (false && a_f16 && !out_f32 && prov->pso[PSO_LINEAR_SIMD_F16] && M >= 8 && N >= 8) {
             [enc setComputePipelineState:prov->pso[PSO_LINEAR_SIMD_F16]];
             NSUInteger tg_x = (N + 31) / 32;
             NSUInteger tg_y = (M + 31) / 32;
@@ -2581,7 +2587,7 @@ static nf_status dispatch_linear(nf_provider_metal* prov, const char* op_name,
             NSUInteger gridH = ((M + 15) / 16) * 16;
             [enc dispatchThreads:MTLSizeMake(gridW, gridH, 1)
            threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
-        } else if (prov->has_simd_matmul && M >= 8 && N >= 8) {
+        } else if (false && prov->has_simd_matmul && M >= 8 && N >= 8) {
             [enc setComputePipelineState:prov->pso[PSO_LINEAR_SIMD]];
             NSUInteger tg_x = (N + 31) / 32;
             NSUInteger tg_y = (M + 31) / 32;
@@ -3000,7 +3006,7 @@ static nf_status dispatch_fused_dq4_linear(nf_provider_metal* prov, const char* 
         uint32_t M = 1, N = 1;
         if (pc) { std::memcpy(&M, pc + 20, sizeof(uint32_t)); std::memcpy(&N, pc + 24, sizeof(uint32_t)); }
         /* SIMD path: use simdgroup matmul when GPU supports it and tiles are large enough */
-        if (prov->has_simd_matmul && M >= 8 && N >= 8) {
+        if (false && prov->has_simd_matmul && M >= 8 && N >= 8) {
             MetalPSO simd_pso = is_f16 ? PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD_F16
                                         : PSO_FUSED_DEQUANT_Q4_0_LINEAR_SIMD;
             [enc setComputePipelineState:prov->pso[simd_pso]];

@@ -310,7 +310,9 @@ static void handle_completions(int fd, const HttpRequest& req, ServerState& stat
     /* Prefill */
     {
         void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
-        ((int32_t*)p)[0] = prompt_ids.back();
+        int32_t* tok_ptr = reinterpret_cast<int32_t*>(p);
+        for (uint32_t i = 0; i < prefill_seq; ++i)
+            tok_ptr[i] = prompt_ids[i];
         ctx->token_buf.ops.unmap(ctx->token_buf.buf);
 
         auto sg = nf::build_llama_step_graph(*ctx, prefill_seq);
@@ -320,7 +322,8 @@ static void handle_completions(int fd, const HttpRequest& req, ServerState& stat
 
         ctx->logits.ops.cache_sync(ctx->logits.buf, NF_CACHE_INVALIDATE, 0, 0);
         ctx->logits.ops.map(ctx->logits.buf, &p);
-        int32_t tok = nf::sample_token((float*)p, V,
+        float* last_logits = (float*)p + (prefill_seq - 1) * V;
+        int32_t tok = nf::sample_token(last_logits, V,
             all_tokens.data(), (uint32_t)all_tokens.size(), sp, rng);
         ctx->logits.ops.unmap(ctx->logits.buf);
         all_tokens.push_back(tok);

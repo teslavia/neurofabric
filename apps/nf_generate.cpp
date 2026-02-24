@@ -23,6 +23,7 @@
 #include "model/chat_template.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,26 @@
 #include <random>
 #include <string>
 #include <vector>
+
+/* F16→F32 conversion helper for logits */
+static inline float f16_to_f32(uint16_t h) {
+    uint32_t sign = (h >> 15) & 1;
+    uint32_t exp  = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    if (exp == 0) {
+        if (mant == 0) return sign ? -0.0f : 0.0f;
+        float v = (mant / 1024.0f) * (1.0f / 16384.0f);
+        return sign ? -v : v;
+    }
+    if (exp == 31) return sign ? -INFINITY : INFINITY;
+    float v = (1.0f + mant / 1024.0f) * powf(2.0f, (float)exp - 15.0f);
+    return sign ? -v : v;
+}
+
+static void convert_f16_to_f32(const void* src, float* dst, uint32_t count) {
+    const uint16_t* s = (const uint16_t*)src;
+    for (uint32_t i = 0; i < count; ++i) dst[i] = f16_to_f32(s[i]);
+}
 
 /* Phase 44: NeuralOS runtime (auto with --paged) */
 #include "neuralOS/kernel/NeuralOSRuntime.hpp"
@@ -240,7 +261,9 @@ int main(int argc, char** argv) {
     /* Prefill */
     {
         void* p; ctx->token_buf.ops.map(ctx->token_buf.buf, &p);
-        ((int32_t*)p)[0] = prompt_ids.back();
+        int32_t* tok_ptr = reinterpret_cast<int32_t*>(p);
+        for (uint32_t i = 0; i < prefill_seq; ++i)
+            tok_ptr[i] = prompt_ids[i];
         ctx->token_buf.ops.unmap(ctx->token_buf.buf);
 
         auto sg = nf::build_llama_step_graph(*ctx, prefill_seq);
@@ -250,7 +273,40 @@ int main(int argc, char** argv) {
 
         ctx->logits.ops.cache_sync(ctx->logits.buf, NF_CACHE_INVALIDATE, 0, 0);
         ctx->logits.ops.map(ctx->logits.buf, &p);
-        int32_t tok = nf::sample_token((float*)p, V,
+        /* Convert F16 logits to F32 if needed, then sample from last position */
+        std::vector<float> logits_f32;
+        float* last_logits;
+        if (use_fp16) {
+            logits_f32.resize(V);
+            const uint16_t* src = (const uint16_t*)p + (prefill_seq - 1) * V;
+            convert_f16_to_f32(src, logits_f32.data(), V);
+            last_logits = logits_f32.data();
+        } else {
+            last_logits = (float*)p + (prefill_seq - 1) * V;
+        }
+        /* DEBUG: dump top-5 logits after prefill */
+        {
+            std::vector<std::pair<float,int>> top5(5, {-1e30f, -1});
+            float lmin = 1e30f, lmax = -1e30f;
+            double lsum = 0;
+            for (int i = 0; i < (int)V; ++i) {
+                float v = last_logits[i];
+                lsum += v; if (v < lmin) lmin = v; if (v > lmax) lmax = v;
+                for (int j = 0; j < 5; ++j) {
+                    if (v > top5[j].first) {
+                        for (int k = 4; k > j; --k) top5[k] = top5[k-1];
+                        top5[j] = {v, i}; break;
+                    }
+                }
+            }
+            std::fprintf(stderr, "[DEBUG] prefill logits: min=%.4f max=%.4f mean=%.4f\n",
+                         lmin, lmax, (float)(lsum / V));
+            for (int j = 0; j < 5; ++j)
+                std::fprintf(stderr, "  top%d: id=%d val=%.4f piece=\"%s\"\n",
+                             j+1, top5[j].second, top5[j].first,
+                             tokenizer.id_to_piece(top5[j].second).c_str());
+        }
+        int32_t tok = nf::sample_token(last_logits, V,
             all_tokens.data(), (uint32_t)all_tokens.size(), sp, rng);
         ctx->logits.ops.unmap(ctx->logits.buf);
         all_tokens.push_back(tok);
@@ -286,7 +342,16 @@ int main(int argc, char** argv) {
 
         ctx->logits.ops.cache_sync(ctx->logits.buf, NF_CACHE_INVALIDATE, 0, 0);
         ctx->logits.ops.map(ctx->logits.buf, &p);
-        int32_t tok = nf::sample_token((float*)p, V,
+        float* decode_logits;
+        std::vector<float> decode_f32;
+        if (use_fp16) {
+            decode_f32.resize(V);
+            convert_f16_to_f32(p, decode_f32.data(), V);
+            decode_logits = decode_f32.data();
+        } else {
+            decode_logits = (float*)p;
+        }
+        int32_t tok = nf::sample_token(decode_logits, V,
             all_tokens.data(), (uint32_t)all_tokens.size(), sp, rng);
         ctx->logits.ops.unmap(ctx->logits.buf);
         all_tokens.push_back(tok);
