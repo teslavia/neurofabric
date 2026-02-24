@@ -160,3 +160,64 @@ class Session:
         if hasattr(self, "_handle") and self._handle:
             self._lib.nf_destroy_session(self._handle)
             self._handle = None
+
+
+class Generator:
+    """High-level text generation API using nf_generate CLI."""
+
+    def __init__(self, model_path, fp16=False, paged=True):
+        self.model_path = str(model_path)
+        self.fp16 = fp16
+        self.paged = paged
+        self._bin = self._find_binary()
+
+    def _find_binary(self):
+        here = pathlib.Path(__file__).resolve().parent
+        candidates = [
+            here / ".." / "build" / "bin" / "nf_generate",
+            here / ".." / "build-rel" / "bin" / "nf_generate",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c.resolve())
+        return "nf_generate"
+
+    def _build_cmd(self, prompt, max_tokens=128, temperature=0.8):
+        cmd = [self._bin, self.model_path, prompt,
+               "--max-tokens", str(max_tokens),
+               "--temperature", str(temperature)]
+        if self.fp16:
+            cmd.append("--fp16")
+        if self.paged:
+            cmd.append("--paged")
+        return cmd
+
+    def generate(self, prompt, max_tokens=128, temperature=0.8):
+        """Generate text from a prompt. Returns the generated string."""
+        import subprocess
+        cmd = self._build_cmd(prompt, max_tokens, temperature)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        return result.stdout
+
+    def chat(self, messages, max_tokens=128, temperature=0.8, stream=False):
+        """Chat-style generation. messages: list of dicts with 'role'/'content'.
+        If stream=True, returns an iterator of tokens."""
+        import subprocess
+        prompt = messages[-1]["content"] if messages else ""
+        cmd = self._build_cmd(prompt, max_tokens, temperature)
+        cmd.extend(["--chat", "--chat-format", "chatml"])
+        if stream:
+            return self._stream(cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        return result.stdout
+
+    def _stream(self, cmd):
+        """Yield tokens as they are generated."""
+        import subprocess
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            for line in proc.stdout:
+                yield line
+        finally:
+            proc.terminate()
+            proc.wait()

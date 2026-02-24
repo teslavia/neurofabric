@@ -16,7 +16,7 @@
 #define NEURALOS_L2_VMMU_HPP
 
 #include "neuralOS/kernel/ContextHub.hpp"
-#include "model/model_config.hpp"
+#include "neuralOS/kernel/kv_cache.hpp"
 
 #include <algorithm>
 #include <cstdint>

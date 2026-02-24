@@ -16,8 +16,9 @@
 #define NEURALOS_L2_CFS_HPP
 
 #include "neuralOS/kernel/vMMU.hpp"
+#include "neuralOS/kernel/kv_cache.hpp"
+#include "neuralOS/kernel/request_scheduler.hpp"
 #include "neuralOS/mesh/kv_migration.hpp"
-#include "model/model_config.hpp"
 
 #include <algorithm>
 #include <cstdint>

@@ -34,6 +34,8 @@
 /* Phase 44: NeuralOS runtime (auto with --paged) */
 #include "neuralOS/kernel/NeuralOSRuntime.hpp"
 #include "neuralOS/compiler/compiler_pipeline.hpp"
+#include "neuralOS/compiler/dag_to_nfir.hpp"
+#include "neuralOS/compiler/nfir_annotate.hpp"
 
 extern "C" nf_status nf_plugin_register(nf_provider_vtable* vt, nf_provider* prov);
 extern "C" nf_status nf_plugin_register_mem(nf_provider_mem_vtable* vt, nf_provider* prov);
@@ -314,7 +316,7 @@ int main(int argc, char** argv) {
                  "decode: %.0f ms (%u tokens, %.1f tok/s)\n",
                  ctx_ms, prefill_ms, decode_ms, n_generated, tps);
 
-    /* Phase 44: NeuralOS runtime stats + compiler pipeline */
+    /* Phase 44: NeuralOS runtime stats */
     if (nos_runtime) {
         nos_runtime->complete(0);  /* mark the single request complete */
         auto& st = nos_runtime->stats();
@@ -324,34 +326,49 @@ int main(int argc, char** argv) {
                      (unsigned long long)st.total_completed,
                      (unsigned long long)st.total_preempted,
                      st.pages_out, st.prefix_hits);
+    }
 
-        /* CompilerPipeline stats on step graph structure */
-        neuralOS::L1::NfirHighGraph ir_graph;
-        /* Build a representative IR from the last step graph */
-        neuralOS::L1::NfirHighOp embed_op;
-        embed_op.kind = neuralOS::L1::HighOpKind::EMBEDDING;
-        embed_op.name = "token_embed";
-        ir_graph.add_op(embed_op);
-        for (uint32_t l = 0; l < model->n_layers; ++l) {
-            neuralOS::L1::NfirHighOp attn;
-            attn.kind = neuralOS::L1::HighOpKind::ATTENTION;
-            attn.name = "layer_" + std::to_string(l) + "_attn";
-            ir_graph.add_op(attn);
-            neuralOS::L1::NfirHighOp ffn;
-            ffn.kind = neuralOS::L1::HighOpKind::FFN_BLOCK;
-            ffn.name = "layer_" + std::to_string(l) + "_ffn";
-            ir_graph.add_op(ffn);
+    /* Phase 45B: NFIR bridge — lift real DAG through compiler pipeline */
+    {
+        auto sg_ir = nf::build_llama_step_graph(*ctx, 1);
+
+        std::vector<neuralOS::L1::DagNodeInfo> dag_nodes;
+        dag_nodes.push_back({sg_ir.embed_id, "embedding_lookup", 1, 1});
+        for (auto& lid : sg_ir.layer_ids) {
+            dag_nodes.push_back({lid.attn_norm,  "rms_norm",         1, 1});
+            dag_nodes.push_back({lid.q_lin,      "linear",           2, 1});
+            dag_nodes.push_back({lid.k_lin,      "linear",           2, 1});
+            dag_nodes.push_back({lid.v_lin,      "linear",           2, 1});
+            dag_nodes.push_back({lid.q_rope,     "rope",             1, 1});
+            dag_nodes.push_back({lid.k_rope,     "rope",             1, 1});
+            dag_nodes.push_back({lid.cached_attn,"causal_attention",  3, 1});
+            dag_nodes.push_back({lid.o_lin,      "linear",           2, 1});
+            dag_nodes.push_back({lid.resid_add1, "element_add",      2, 1});
+            dag_nodes.push_back({lid.ffn_norm,   "rms_norm",         1, 1});
+            dag_nodes.push_back({lid.gate_lin,   "linear",           2, 1});
+            dag_nodes.push_back({lid.silu_node,  "silu",             1, 1});
+            dag_nodes.push_back({lid.up_lin,     "linear",           2, 1});
+            dag_nodes.push_back({lid.elem_mul,   "element_mul",      2, 1});
+            dag_nodes.push_back({lid.down_lin,   "linear",           2, 1});
+            dag_nodes.push_back({lid.resid_add2, "element_add",      2, 1});
         }
-        /* Wire edges: embed→attn0→ffn0→attn1→ffn1→... */
-        for (uint32_t i = 0; i + 1 < ir_graph.num_ops(); ++i)
-            ir_graph.add_edge(i, i + 1);
+        dag_nodes.push_back({sg_ir.final_norm_id, "rms_norm", 1, 1});
+        dag_nodes.push_back({sg_ir.lm_head_id,    "linear",   2, 1});
+
+        auto ir_graph = neuralOS::L1::lift_nodes_to_nfir(
+            dag_nodes.data(), static_cast<uint32_t>(dag_nodes.size()));
 
         neuralOS::L1::CompilerPipeline compiler;
         auto cr = compiler.run(&ir_graph);
+
+        auto ann = neuralOS::L1::annotate_from_nfir(ir_graph);
+
         std::fprintf(stderr, "[nf_generate] Compiler: ops=%u removed=%u merged=%u "
-                     "shapes=%u fusions=%u\n",
+                     "shapes=%u fusions=%u annotated=%zu\n",
                      ir_graph.num_ops(), cr.ops_removed, cr.ops_merged,
-                     cr.shapes_inferred, cr.fusions_found);
+                     cr.shapes_inferred, cr.fusions_found, ann.annotations.size());
+
+        engine.destroy_graph(sg_ir.gid);
     }
 
     vt.shutdown(prov);

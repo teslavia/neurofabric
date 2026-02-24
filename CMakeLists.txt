@@ -51,6 +51,7 @@ option(NF_BUILD_EXAMPLES "Build example programs"     OFF)  # examples/ removed 
 option(NF_PLUGIN_METAL   "Build Apple Metal plugin"   OFF)
 option(NF_PLUGIN_RKNN    "Build Rockchip RKNN plugin" OFF)
 option(NF_PLUGIN_NETWORK "Build Network Proxy plugin"  ON)
+option(NF_PLUGIN_CUDA   "Build CUDA plugin (CPU fallback)" OFF)
 set(NF_TARGET_BOARD "" CACHE STRING "Target board (rk3588, rpi4, ascend)")
 
 # Auto-detect Apple Silicon
@@ -92,6 +93,10 @@ endif()
 
 if(NF_PLUGIN_NETWORK)
     add_subdirectory(plugins/network)
+endif()
+
+if(NF_PLUGIN_CUDA)
+    add_subdirectory(plugins/cuda)
 endif()
 
 add_subdirectory(core/src/api)

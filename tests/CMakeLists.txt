@@ -163,6 +163,11 @@ nf_add_test(NAME nf_compiler_pipeline_test TEST_NAME compiler_pipeline SOURCES c
 nf_add_test(NAME nf_app_compiler_test      TEST_NAME app_compiler      SOURCES compiler/app_compiler_test.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
 
+nf_add_test(NAME nf_dag_to_nfir_test       TEST_NAME dag_to_nfir       SOURCES compiler/dag_to_nfir_test.cpp
+    INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
+nf_add_test(NAME nf_nfir_annotate_test     TEST_NAME nfir_annotate     SOURCES compiler/nfir_annotate_test.cpp
+    INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
+
 # ------------------------------------------------------------------
 # driver — transport abstraction test
 # ------------------------------------------------------------------
@@ -201,6 +206,9 @@ nf_add_test(NAME nf_dataplane_transport_test TEST_NAME dataplane_transport SOURC
 
 nf_add_test(NAME nf_mesh_e2e_test          TEST_NAME mesh_e2e           SOURCES mesh/mesh_e2e_test.cpp
     INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
+
+nf_add_test(NAME nf_rdma_tcp_transport_test TEST_NAME rdma_tcp_transport SOURCES mesh/rdma_tcp_transport_test.cpp
+    INCLUDES ${CMAKE_SOURCE_DIR}/plugins/network/src ${CMAKE_SOURCE_DIR}/core/include)
 
 # ------------------------------------------------------------------
 # Phase 44: E2E NeuralOS kernel path test
@@ -254,4 +262,13 @@ if(NF_PLUGIN_RKNN)
         target_compile_definitions(nf_rknn_silicon_test PRIVATE NF_HAS_RKNN_SDK)
         target_link_libraries(nf_rknn_silicon_test PRIVATE ${RKNN_RT})
     endif()
+endif()
+
+# ------------------------------------------------------------------
+# driver — CUDA stub test (conditional)
+# ------------------------------------------------------------------
+if(NF_PLUGIN_CUDA)
+    nf_add_test(NAME nf_cuda_stub_test TEST_NAME cuda_stub SOURCES driver/cuda_stub_test.cpp
+        LINKS nf_plugin_cuda
+        INCLUDES ${CMAKE_SOURCE_DIR}/core/include)
 endif()

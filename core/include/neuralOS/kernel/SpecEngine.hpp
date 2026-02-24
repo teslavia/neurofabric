@@ -16,7 +16,7 @@
 #define NEURALOS_L2_SPECENGINE_HPP
 
 #include "neuralOS/kernel/vMMU.hpp"
-#include "model/model_config.hpp"
+#include "neuralOS/kernel/request_scheduler.hpp"
 
 #include <algorithm>
 #include <cstdint>

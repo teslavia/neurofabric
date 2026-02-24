@@ -4,6 +4,7 @@
  *
  * Phase 37.6: TransportOps interface with TCP implementation
  * and RDMA stub behind NF_HAS_RDMA feature gate.
+ * Phase 45D: Real POSIX socket TCP transport.
  */
 
 #ifndef NEURALOS_RDMA_TRANSPORT_HPP
@@ -13,6 +14,11 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <memory>
 
 namespace neuralOS { namespace transport {
 
@@ -52,26 +58,54 @@ inline TransportOps make_tcp_transport() {
     TransportOps ops;
     ops.kind = TransportKind::TCP;
 
-    /* Placeholder implementations — real socket code lives in network_provider.cpp.
-     * These stubs allow the interface to be tested without actual networking. */
-    ops.connect = [&ops](const std::string& addr, uint16_t port) -> bool {
-        (void)addr; (void)port;
+    auto sock = std::make_shared<int>(-1);
+
+    ops.connect = [sock, &ops](const std::string& addr, uint16_t port) -> bool {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+        struct sockaddr_in sa{};
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(port);
+        if (::inet_pton(AF_INET, addr.c_str(), &sa.sin_addr) <= 0) {
+            ::close(fd);
+            return false;
+        }
+        if (::connect(fd, (struct sockaddr*)&sa, sizeof(sa)) < 0) {
+            ::close(fd);
+            return false;
+        }
+        *sock = fd;
         ops.is_connected = true;
         return true;
     };
 
-    ops.disconnect = [&ops]() {
+    ops.disconnect = [sock, &ops]() {
+        if (*sock >= 0) { ::close(*sock); *sock = -1; }
         ops.is_connected = false;
     };
 
-    ops.send = [](const void* data, size_t len) -> bool {
-        (void)data; (void)len;
-        return true;  /* stub */
+    ops.send = [sock](const void* data, size_t len) -> bool {
+        if (*sock < 0) return false;
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        size_t sent = 0;
+        while (sent < len) {
+            ssize_t n = ::send(*sock, p + sent, len - sent, 0);
+            if (n <= 0) return false;
+            sent += static_cast<size_t>(n);
+        }
+        return true;
     };
 
-    ops.recv = [](void* data, size_t len) -> bool {
-        (void)data; (void)len;
-        return true;  /* stub */
+    ops.recv = [sock](void* data, size_t len) -> bool {
+        if (*sock < 0) return false;
+        uint8_t* p = static_cast<uint8_t*>(data);
+        size_t got = 0;
+        while (got < len) {
+            ssize_t n = ::recv(*sock, p + got, len - got, 0);
+            if (n <= 0) return false;
+            got += static_cast<size_t>(n);
+        }
+        return true;
     };
 
     ops.register_mr = [](void*, size_t) -> uint64_t { return 0; };
@@ -118,6 +152,18 @@ inline TransportOps select_transport() {
 #else
     return make_tcp_transport();
 #endif
+}
+
+inline TransportOps select_transport(const char* scheme) {
+    if (scheme) {
+        std::string s(scheme);
+        if (s.find("rdma://") == 0) {
+#ifdef NF_HAS_RDMA
+            return make_rdma_transport();
+#endif
+        }
+    }
+    return make_tcp_transport();
 }
 
 }} // namespace neuralOS::transport

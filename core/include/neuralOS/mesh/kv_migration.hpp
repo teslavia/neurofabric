@@ -13,7 +13,7 @@
 #ifndef NEURALOS_L5_KV_MIGRATION_HPP
 #define NEURALOS_L5_KV_MIGRATION_HPP
 
-#include "model/model_config.hpp"
+#include "neuralOS/kernel/kv_cache.hpp"
 
 #include <cstdint>
 #include <cstring>

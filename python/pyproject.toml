@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "neurofabric"
+version = "0.2.2"
+description = "Python bindings for the NeuroFabric LLM inference engine"
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = ["pytest"]

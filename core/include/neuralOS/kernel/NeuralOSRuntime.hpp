@@ -15,7 +15,8 @@
 #include "neuralOS/kernel/CFS.hpp"
 #include "neuralOS/kernel/SpecEngine.hpp"
 #include "neuralOS/kernel/ContextHub.hpp"
-#include "model/model_config.hpp"
+#include "neuralOS/kernel/kv_cache.hpp"
+#include "neuralOS/kernel/request_scheduler.hpp"
 
 #include <cstdint>
 #include <memory>
