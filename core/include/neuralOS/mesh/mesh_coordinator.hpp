@@ -1,14 +1,14 @@
 /**
  * @file mesh_coordinator.hpp
- * @brief NeuralOS L5 — Global Mesh Coordinator
+ * @brief NeuralOS mesh — Global Mesh Coordinator
  *
  * Phase 38.1: Manages compute node registration, topology discovery,
  * subgraph assignment, and health monitoring.
  * Phase 44: dispatch/collect via ControlPlane + DataPlane integration.
  */
 
-#ifndef NEURALOS_L5_MESH_COORDINATOR_HPP
-#define NEURALOS_L5_MESH_COORDINATOR_HPP
+#ifndef NEURALOS_MESH_MESH_COORDINATOR_HPP
+#define NEURALOS_MESH_MESH_COORDINATOR_HPP
 
 #include "neuralOS/mesh/topology.hpp"
 #include "neuralOS/mesh/async_dataflow.hpp"
@@ -21,7 +21,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace neuralOS { namespace L5 {
+namespace neuralOS { namespace mesh {
 
 /* ================================================================== */
 /*  NodeHealth — per-node health tracking                              */
@@ -104,7 +104,7 @@ public:
     /* ---- Subgraph Assignment -------------------------------------- */
 
     /** Assign DAG tasks to optimal nodes using VirtualBus splitting */
-    std::vector<L2::GraphPartition> assign_subgraph(
+    std::vector<kernel::GraphPartition> assign_subgraph(
             const std::vector<uint32_t>& task_ids,
             const std::vector<uint64_t>& task_flops) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -204,7 +204,7 @@ public:
         return (it != health_.end()) ? &it->second : nullptr;
     }
 
-    L2::RouteResult route(uint32_t src, uint32_t dst) const {
+    kernel::RouteResult route(uint32_t src, uint32_t dst) const {
         std::lock_guard<std::mutex> lk(mu_);
         return bus_.route(src, dst);
     }
@@ -221,12 +221,18 @@ private:
     mutable std::mutex                          mu_;
     std::unordered_map<uint32_t, NodeDescriptor> nodes_;
     std::unordered_map<uint32_t, NodeHealth>    health_;
-    L2::VirtualBus                              bus_;
+    kernel::VirtualBus                              bus_;
     ControlPlane control_;
     DataPlane    data_;
     uint32_t     dispatches_ = 0;
 };
 
-}} // namespace neuralOS::L5
+}} // namespace neuralOS::mesh
 
-#endif // NEURALOS_L5_MESH_COORDINATOR_HPP
+// Backward compatibility
+namespace neuralOS { namespace L5 {
+    using neuralOS::mesh::NodeHealth;
+    using neuralOS::mesh::MeshCoordinator;
+}}
+
+#endif // NEURALOS_MESH_MESH_COORDINATOR_HPP

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">⚡️ NeuroFabric</h1>
+  <h1 align="center">⚡️ NeuralOS</h1>
   <p align="center">
     <strong>A Microkernel Heterogeneous LLM Inference Engine for Edge & Cloud</strong><br/>
     <em>Zero-vptr Hourglass ABI · 53 Metal GPU Kernels · PagedAttention · Speculative Decoding · Distributed DAG Scheduling</em>

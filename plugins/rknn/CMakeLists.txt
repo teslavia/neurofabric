@@ -1,5 +1,5 @@
 # ==================================================================
-# Neuro-Fabric — Rockchip RKNN Execution Provider Plugin
+# NeuralOS — Rockchip RKNN Execution Provider Plugin
 # ==================================================================
 # Links against librknnrt when available. Falls back to simulation.
 # Loaded at runtime, never linked into core.

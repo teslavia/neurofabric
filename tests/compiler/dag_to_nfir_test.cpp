@@ -14,7 +14,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 static void test_map_op_name() {
     CHECK(map_op_name("rms_norm") == HighOpKind::RMS_NORM, "rms_norm mapping");

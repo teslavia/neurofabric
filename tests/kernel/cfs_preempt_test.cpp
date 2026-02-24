@@ -38,7 +38,7 @@ int main() {
         sched.requests[i].seq_id = kv.alloc_sequence();
     }
 
-    neuralOS::L2::CFS cfs(&sched, &kv);
+    neuralOS::kernel::CFS cfs(&sched, &kv);
 
     /* Test 1: Preempt r1 */
     CHECK(cfs.preempt(id1), "preempt r1 succeeded");

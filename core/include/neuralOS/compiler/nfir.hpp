@@ -1,16 +1,16 @@
 /**
  * @file nfir.hpp
- * @brief NeuralOS L1 — NFIR Facade (re-exports neuro_ir_format.h + multi-level IR forward decls)
+ * @brief NeuralOS compiler — NFIR Facade (re-exports neuro_ir_format.h + multi-level IR forward decls)
  *
  * Phase 36.1: Header-only facade. Does NOT move existing files.
  */
 
-#ifndef NEURALOS_L1_NFIR_HPP
-#define NEURALOS_L1_NFIR_HPP
+#ifndef NEURALOS_COMPILER_NFIR_HPP
+#define NEURALOS_COMPILER_NFIR_HPP
 
 #include "neuralOS/ddi/neuro_ir_format.h"
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* Forward declarations for multi-level IR (Phase 37) */
 struct NfirHighOp;
@@ -19,6 +19,15 @@ struct NfirLowOp;
 struct NfirLowGraph;
 struct FusionCandidate;
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_NFIR_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::NfirHighOp;
+    using neuralOS::compiler::NfirHighGraph;
+    using neuralOS::compiler::NfirLowOp;
+    using neuralOS::compiler::NfirLowGraph;
+    using neuralOS::compiler::FusionCandidate;
+}}
+
+#endif // NEURALOS_COMPILER_NFIR_HPP

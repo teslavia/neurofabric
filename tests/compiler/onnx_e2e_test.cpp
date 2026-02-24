@@ -148,8 +148,8 @@ int main() {
     /* ---- Test 1: Parse the protobuf ---- */
     std::fprintf(stderr, "[onnx_e2e] test 1: parse protobuf\n");
 
-    neuralOS::onnx::OnnxModel model;
-    neuralOS::onnx::OnnxParser parser;
+    neuralOS::compiler::onnx::OnnxModel model;
+    neuralOS::compiler::onnx::OnnxParser parser;
     bool ok = parser.parse(model_bytes.data(), model_bytes.size(), &model);
     CHECK(ok, "parse should succeed");
     CHECK(model.ir_version == 7, "ir_version should be 7");
@@ -174,16 +174,16 @@ int main() {
     /* ---- Test 2: Convert to NfirHighGraph ---- */
     std::fprintf(stderr, "[onnx_e2e] test 2: convert to NFIR\n");
 
-    neuralOS::L1::NfirHighGraph nfir;
-    ok = neuralOS::onnx::onnx_to_nfir(model.graph, &nfir);
+    neuralOS::compiler::NfirHighGraph nfir;
+    ok = neuralOS::compiler::onnx::onnx_to_nfir(model.graph, &nfir);
     CHECK(ok, "onnx_to_nfir should succeed");
     CHECK(nfir.num_ops() == 3, "should have 3 ops");
     CHECK(nfir.num_tensors() >= 4, "should have at least 4 tensors");
 
     /* Verify op kinds */
-    CHECK(nfir.ops[0].kind == neuralOS::L1::HighOpKind::MATMUL, "op 0 should be MATMUL");
-    CHECK(nfir.ops[1].kind == neuralOS::L1::HighOpKind::ELEMENT_ADD, "op 1 should be ELEMENT_ADD");
-    CHECK(nfir.ops[2].kind == neuralOS::L1::HighOpKind::SILU, "op 2 should be SILU (Relu mapped)");
+    CHECK(nfir.ops[0].kind == neuralOS::compiler::HighOpKind::MATMUL, "op 0 should be MATMUL");
+    CHECK(nfir.ops[1].kind == neuralOS::compiler::HighOpKind::ELEMENT_ADD, "op 1 should be ELEMENT_ADD");
+    CHECK(nfir.ops[2].kind == neuralOS::compiler::HighOpKind::SILU, "op 2 should be SILU (Relu mapped)");
 
     /* Verify weight tensor has size_bytes from initializer */
     bool found_weight = false;
@@ -203,7 +203,7 @@ int main() {
     /* ---- Test 3: Run CompilerPipeline ---- */
     std::fprintf(stderr, "[onnx_e2e] test 3: compiler pipeline\n");
 
-    neuralOS::L1::CompilerPipeline compiler;
+    neuralOS::compiler::CompilerPipeline compiler;
     auto cr = compiler.run(&nfir);
     std::fprintf(stderr, "[onnx_e2e]   removed=%u merged=%u shapes=%u fusions=%u\n",
                  cr.ops_removed, cr.ops_merged, cr.shapes_inferred, cr.fusions_found);

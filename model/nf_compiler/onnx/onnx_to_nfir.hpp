@@ -5,8 +5,8 @@
  * Phase 37.4 / 44: Converts parsed OnnxGraph to NfirHighGraph.
  */
 
-#ifndef NEURALOS_ONNX_TO_NFIR_HPP
-#define NEURALOS_ONNX_TO_NFIR_HPP
+#ifndef NEURALOS_COMPILER_ONNX_TO_NFIR_HPP
+#define NEURALOS_COMPILER_ONNX_TO_NFIR_HPP
 
 #include "onnx_parser.hpp"
 #include "onnx_op_map.hpp"
@@ -15,11 +15,11 @@
 #include <string>
 #include <unordered_map>
 
-namespace neuralOS { namespace onnx {
+namespace neuralOS { namespace compiler { namespace onnx {
 
 /** Convert an OnnxGraph to NfirHighGraph.
  *  Returns true on success. */
-inline bool onnx_to_nfir(const OnnxGraph& onnx, L1::NfirHighGraph* out) {
+inline bool onnx_to_nfir(const OnnxGraph& onnx, neuralOS::compiler::NfirHighGraph* out) {
     if (!out) return false;
 
     /* Map ONNX tensor names → NFIR tensor IDs */
@@ -28,7 +28,7 @@ inline bool onnx_to_nfir(const OnnxGraph& onnx, L1::NfirHighGraph* out) {
     auto get_or_create_tensor = [&](const std::string& name) -> uint32_t {
         auto it = tensor_map.find(name);
         if (it != tensor_map.end()) return it->second;
-        L1::NfirTensorRef t;
+        neuralOS::compiler::NfirTensorRef t;
         t.name = name;
         uint32_t id = out->add_tensor(t);
         tensor_map[name] = id;
@@ -59,7 +59,7 @@ inline bool onnx_to_nfir(const OnnxGraph& onnx, L1::NfirHighGraph* out) {
         auto& node = onnx.nodes[i];
         auto mapping = lookup_op(node.op_type);
 
-        L1::NfirHighOp hop;
+        neuralOS::compiler::NfirHighOp hop;
         hop.kind = mapping.kind;
         hop.name = node.name.empty() ? node.op_type : node.name;
 
@@ -91,6 +91,13 @@ inline bool onnx_to_nfir(const OnnxGraph& onnx, L1::NfirHighGraph* out) {
     return true;
 }
 
+}}} // namespace neuralOS::compiler::onnx
+
+/* ================================================================== */
+/*  Backward-compat alias: neuralOS::onnx → neuralOS::compiler::onnx  */
+/* ================================================================== */
+namespace neuralOS { namespace onnx {
+    using neuralOS::compiler::onnx::onnx_to_nfir;
 }} // namespace neuralOS::onnx
 
-#endif // NEURALOS_ONNX_TO_NFIR_HPP
+#endif // NEURALOS_COMPILER_ONNX_TO_NFIR_HPP

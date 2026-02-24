@@ -17,7 +17,7 @@
 int main() {
     printf("=== VirtualBus Test ===\n");
 
-    neuralOS::L2::VirtualBus bus;
+    neuralOS::kernel::VirtualBus bus;
 
     /* Register 3 nodes: M4 Pro (local), RK3588, Cloud GPU */
     bus.register_provider(0, "m4_pro", "localhost", 32ULL * 1024 * 1024 * 1024,
@@ -83,7 +83,7 @@ int main() {
     CHECK(total_assigned == 6, "all 6 tasks assigned");
 
     /* Test 7: Split with single node */
-    neuralOS::L2::VirtualBus single;
+    neuralOS::kernel::VirtualBus single;
     single.register_provider(0, "solo", "localhost", 16ULL * 1024 * 1024 * 1024,
                              5000000000ULL, true);
     auto sp = single.split_graph(task_ids, task_flops);

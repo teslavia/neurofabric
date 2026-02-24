@@ -8,8 +8,8 @@
  * Header-only. Depends only on kv_cache.hpp + STL.
  */
 
-#ifndef NEURALOS_L2_REQUEST_SCHEDULER_HPP
-#define NEURALOS_L2_REQUEST_SCHEDULER_HPP
+#ifndef NEURALOS_KERNEL_REQUEST_SCHEDULER_HPP
+#define NEURALOS_KERNEL_REQUEST_SCHEDULER_HPP
 
 #include "neuralOS/kernel/kv_cache.hpp"
 
@@ -20,7 +20,7 @@
 #include <functional>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  RequestState + InferenceRequest                                    */
@@ -216,6 +216,17 @@ inline uint32_t speculative_accept(
     return K;
 }
 
-} /* namespace nf */
+}} // neuralOS::kernel
 
-#endif /* NEURALOS_L2_REQUEST_SCHEDULER_HPP */
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::RequestState;
+    using neuralOS::kernel::InferenceRequest;
+    using neuralOS::kernel::BatchDescriptor;
+    using neuralOS::kernel::NF_MAX_REQUESTS;
+    using neuralOS::kernel::RequestScheduler;
+    using neuralOS::kernel::SpeculativeConfig;
+    using neuralOS::kernel::speculative_accept;
+}
+
+#endif /* NEURALOS_KERNEL_REQUEST_SCHEDULER_HPP */

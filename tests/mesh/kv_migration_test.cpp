@@ -49,7 +49,7 @@ int main() {
     uint32_t phys0 = src_kv.sequences[src_seq].block_table[0];
     std::memset(src_mem.data() + phys0 * BYTES_PER_BLOCK, 0xBB, BYTES_PER_BLOCK);
 
-    neuralOS::L5::KVMigrator migrator;
+    neuralOS::mesh::KVMigrator migrator;
 
     /* Test 1: Serialize */
     auto wire = migrator.serialize_kv(src_kv, src_seq, src_mem.data(), BYTES_PER_BLOCK);

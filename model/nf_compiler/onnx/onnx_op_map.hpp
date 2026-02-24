@@ -5,23 +5,23 @@
  * Phase 37.4: Maps ~40 common transformer ONNX ops to NF HighOpKind.
  */
 
-#ifndef NEURALOS_ONNX_OP_MAP_HPP
-#define NEURALOS_ONNX_OP_MAP_HPP
+#ifndef NEURALOS_COMPILER_ONNX_OP_MAP_HPP
+#define NEURALOS_COMPILER_ONNX_OP_MAP_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
 #include <string>
 #include <unordered_map>
 
-namespace neuralOS { namespace onnx {
+namespace neuralOS { namespace compiler { namespace onnx {
 
 struct OpMapping {
-    neuralOS::L1::HighOpKind kind;
+    neuralOS::compiler::HighOpKind kind;
     bool supported;
 };
 
 inline const std::unordered_map<std::string, OpMapping>& get_op_map() {
-    using K = neuralOS::L1::HighOpKind;
+    using K = neuralOS::compiler::HighOpKind;
     static const std::unordered_map<std::string, OpMapping> map = {
         {"MatMul",           {K::MATMUL,      true}},
         {"Gemm",             {K::MATMUL,      true}},
@@ -72,9 +72,18 @@ inline OpMapping lookup_op(const std::string& onnx_op) {
     auto& m = get_op_map();
     auto it = m.find(onnx_op);
     if (it != m.end()) return it->second;
-    return {neuralOS::L1::HighOpKind::CUSTOM, false};
+    return {neuralOS::compiler::HighOpKind::CUSTOM, false};
 }
 
+}}} // namespace neuralOS::compiler::onnx
+
+/* ================================================================== */
+/*  Backward-compat alias: neuralOS::onnx → neuralOS::compiler::onnx  */
+/* ================================================================== */
+namespace neuralOS { namespace onnx {
+    using neuralOS::compiler::onnx::OpMapping;
+    using neuralOS::compiler::onnx::get_op_map;
+    using neuralOS::compiler::onnx::lookup_op;
 }} // namespace neuralOS::onnx
 
-#endif // NEURALOS_ONNX_OP_MAP_HPP
+#endif // NEURALOS_COMPILER_ONNX_OP_MAP_HPP

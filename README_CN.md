@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">⚡️ NeuroFabric</h1>
+  <h1 align="center">⚡️ NeuralOS</h1>
   <p align="center">
     <strong>面向边缘与云端的微内核异构 LLM 推理引擎</strong><br/>
     <em>零虚表沙漏 ABI · 59 Metal GPU 内核 · NeuralOS 5 层架构 · PagedAttention · 推测解码 · 分布式 DAG 调度</em>
@@ -24,9 +24,9 @@
 
 ---
 
-## 为什么选择 NeuroFabric？
+## 为什么选择 NeuralOS？
 
-大多数推理引擎是铁板一块——绑死一个厂商 SDK、一种内存模型、一套执行拓扑。NeuroFabric 反其道而行：一个只管调度契约的**微内核**，所有计算、内存、传输全部委托给**动态加载的插件**，插件之间通过**零虚表 C11 ABI 边界**通信。
+大多数推理引擎是铁板一块——绑死一个厂商 SDK、一种内存模型、一套执行拓扑。NeuralOS 反其道而行：一个只管调度契约的**微内核**，所有计算、内存、传输全部委托给**动态加载的插件**，插件之间通过**零虚表 C11 ABI 边界**通信。
 
 同一个二进制文件，在 Mac 上以 ~45 tok/s（融合 FP16）运行 7B LLaMA，在 RK3588 上走 NPU DMA-BUF 零拷贝推理——或者两者同时通过 TCP 协作，DAG 调度器自动把子图路由到最优加速器。
 
@@ -265,7 +265,7 @@ cmake --build build -j$(nproc)
 ### 3. Python 绑定
 
 ```python
-from neurofabric import Engine, Session
+from neuralos import Engine, Session
 
 engine = Engine(n_threads=4)
 session = Session(engine, "model.nfir")
@@ -395,7 +395,7 @@ sess.step().get();  // 阻塞直到 DAG 完成
 
 ## 多架构支持
 
-NeuroFabric 使用**策略模式**处理架构特定行为。每种架构注册自己的权重命名、注意力、RoPE、FFN 和归一化策略：
+NeuralOS 使用**策略模式**处理架构特定行为。每种架构注册自己的权重命名、注意力、RoPE、FFN 和归一化策略：
 
 | 特性 | LLaMA | Mistral | Phi-3 |
 |------|-------|---------|-------|
@@ -484,7 +484,7 @@ neurofabric/                              ~35K LOC · 64 测试 · NeuralOS 5 �
 │   └── nf_bench.cpp                      基准测试套件
 ├── infra/cross_compile/                  交叉编译工具链
 ├── python/
-│   └── neurofabric.py                    零依赖 ctypes 绑定
+│   └── neuralos.py                    零依赖 ctypes 绑定
 ├── tests/                                64 个测试文件, 按层组织
 │   ├── compiler/                      编译器测试 (4)
 │   ├── kernel/                        内核子系统测试 (17)
@@ -500,7 +500,7 @@ neurofabric/                              ~35K LOC · 64 测试 · NeuralOS 5 �
 
 ## 演进路线
 
-NeuroFabric 已经历 40 个迭代阶段。未来方向：
+NeuralOS 已经历 40 个迭代阶段。未来方向：
 
 | 阶段 | 方向 | 说明 |
 |------|------|------|
@@ -548,7 +548,7 @@ NeuroFabric 已经历 40 个迭代阶段。未来方向：
 ## 许可证
 
 ```
-Copyright 2025 NeuroFabric Contributors
+Copyright 2025 NeuralOS Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

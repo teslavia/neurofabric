@@ -14,7 +14,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 /* Build a mock transformer-like NfirHighGraph */
 static NfirHighGraph build_transformer_graph() {

@@ -14,7 +14,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 static NfirTensorRef make_tensor(uint32_t id) {
     NfirTensorRef t;

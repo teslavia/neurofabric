@@ -24,7 +24,7 @@ int main() {
     /* Create ContextHub with 1MB budget */
     nf::ContextHub hub(1024 * 1024, NF_EVICT_LRU);
 
-    neuralOS::L2::vMMU vmmu(&kv, &hub);
+    neuralOS::kernel::vMMU vmmu(&kv, &hub);
 
     /* Insert some cached entries into ContextHub */
     std::vector<int32_t> key1 = {1, 2, 3, 4, 5};
@@ -77,7 +77,7 @@ int main() {
     CHECK(match.match_len == 0, "empty query returns 0 match");
 
     /* Test 7: vMMU without hub */
-    neuralOS::L2::vMMU vmmu_no_hub(&kv, nullptr);
+    neuralOS::kernel::vMMU vmmu_no_hub(&kv, nullptr);
     match = vmmu_no_hub.radix_prefix_share({1, 2, 3});
     CHECK(!match.found, "no hub returns no match");
 

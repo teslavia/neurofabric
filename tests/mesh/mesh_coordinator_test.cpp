@@ -19,9 +19,9 @@
 int main() {
     printf("=== Mesh Coordinator Test ===\n");
 
-    neuralOS::L5::MeshCoordinator::Config cfg;
+    neuralOS::mesh::MeshCoordinator::Config cfg;
     cfg.heartbeat_timeout_ms = 50;  /* short for testing */
-    neuralOS::L5::MeshCoordinator coord(cfg);
+    neuralOS::mesh::MeshCoordinator coord(cfg);
 
     /* Register nodes */
     CHECK(coord.register_node(0, "m4_pro", "localhost", 32ULL<<30, 10000000000ULL, true),

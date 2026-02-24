@@ -1,5 +1,5 @@
 # ==================================================================
-# Neuro-Fabric — Developer Tools
+# NeuralOS — Developer Tools
 # ==================================================================
 
 # ---- nf_bench: Benchmark suite (Metal only) ----
@@ -12,5 +12,5 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/src
     )
-    target_link_libraries(nf_bench PRIVATE nf_core nf_plugin_metal)
+    target_link_libraries(nf_bench PRIVATE neuralOS_core nf_plugin_metal)
 endif()

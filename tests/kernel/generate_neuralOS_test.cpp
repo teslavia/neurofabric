@@ -22,7 +22,7 @@ int main() {
     nf::RequestScheduler sched;
 
     /* Simulate --neuralOS flag: construct runtime */
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched);
 
     /* Submit single request (like nf_generate does) */
     nf::InferenceRequest req;
@@ -49,9 +49,9 @@ int main() {
     /* Backward compat: without --neuralOS, runtime not constructed */
     /* (just verify the flag-based construction pattern works) */
     bool use_neuralOS = false;
-    neuralOS::L2::NeuralOSRuntime* opt_runtime = nullptr;
+    neuralOS::kernel::NeuralOSRuntime* opt_runtime = nullptr;
     if (use_neuralOS) {
-        opt_runtime = new neuralOS::L2::NeuralOSRuntime(&kv, &sched);
+        opt_runtime = new neuralOS::kernel::NeuralOSRuntime(&kv, &sched);
     }
     CHECK(opt_runtime == nullptr, "runtime null when flag disabled");
 

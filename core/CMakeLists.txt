@@ -1,5 +1,5 @@
 # ==================================================================
-# Neuro-Fabric Core — Microkernel Scheduler & Plugin Loader
+# NeuralOS Core — Microkernel Scheduler & Plugin Loader
 # ==================================================================
 # This library contains ZERO hardware-specific code.
 # All device interaction flows through nf_provider_vtable.
@@ -46,22 +46,22 @@ endif()
 # ------------------------------------------------------------------
 # Library Target
 # ------------------------------------------------------------------
-add_library(nf_core SHARED ${NF_CORE_SOURCES})
+add_library(neuralOS_core SHARED ${NF_CORE_SOURCES})
 
 # Generate the cross-platform export macro header automatically.
-# This produces: ${CMAKE_CURRENT_BINARY_DIR}/nf_core_export.h
+# This produces: ${CMAKE_CURRENT_BINARY_DIR}/neuralOS_core_export.h
 # with macros: NF_CORE_EXPORT, NF_CORE_NO_EXPORT, NF_CORE_DEPRECATED
-generate_export_header(nf_core
+generate_export_header(neuralOS_core
     BASE_NAME NF_CORE
-    EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/nf_core_export.h
+    EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/neuralOS_core_export.h
 )
 
-target_compile_definitions(nf_core PRIVATE NF_BUILDING_DLL)
+target_compile_definitions(neuralOS_core PRIVATE NF_BUILDING_DLL)
 
 # ------------------------------------------------------------------
 # Include Paths
 # ------------------------------------------------------------------
-target_include_directories(nf_core
+target_include_directories(neuralOS_core
     PUBLIC
         # Consumers see the ABI header
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -75,7 +75,7 @@ target_include_directories(nf_core
 # ------------------------------------------------------------------
 # Symbol Visibility (belt-and-suspenders with global policy)
 # ------------------------------------------------------------------
-set_target_properties(nf_core PROPERTIES
+set_target_properties(neuralOS_core PROPERTIES
     CXX_VISIBILITY_PRESET     hidden
     VISIBILITY_INLINES_HIDDEN ON
     POSITION_INDEPENDENT_CODE ON
@@ -90,7 +90,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     # Win32 LoadLibrary is in kernel32, linked implicitly
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # dlopen/dlsym live in libdl on Linux
-    target_link_libraries(nf_core PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(neuralOS_core PRIVATE ${CMAKE_DL_LIBS})
 elseif(APPLE)
     # macOS: dlopen is in libSystem, no extra link needed
 endif()

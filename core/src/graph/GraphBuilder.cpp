@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <unordered_map>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 GraphBuilder::GraphBuilder(PipelineEngine& engine, ActivationAllocFn alloc_fn)
     : engine_(engine), alloc_fn_(std::move(alloc_fn)) {}
@@ -58,7 +58,7 @@ nf_status GraphBuilder::load_tensors(LoadedGraph& lg) {
 
         if (td.usage == NF_IR_USAGE_WEIGHT) {
             slot.is_weight = true;
-            nf_status st = mmap_buffer_create(
+            nf_status st = nf::mmap_buffer_create(
                 lg.fd,
                 lg.header.payload_offset + td.weight_offset,
                 td.size_bytes,
@@ -197,4 +197,4 @@ nf_buffer_ops GraphBuilder::get_tensor_ops(uint32_t tensor_id) const {
     return nf_buffer_ops{};
 }
 
-} // namespace nf
+}} // neuralOS::kernel

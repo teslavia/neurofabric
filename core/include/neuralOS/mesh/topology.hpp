@@ -1,19 +1,19 @@
 /**
  * @file topology.hpp
- * @brief NeuralOS L5 — Topology Descriptor POD Structures
+ * @brief NeuralOS mesh — Topology Descriptor POD Structures
  *
  * Phase 36.1: Defines the node/edge topology descriptors used by
- * VirtualBus (L2) and MeshCoordinator (Phase 38).
+ * VirtualBus (kernel) and MeshCoordinator (Phase 38).
  */
 
-#ifndef NEURALOS_L5_TOPOLOGY_HPP
-#define NEURALOS_L5_TOPOLOGY_HPP
+#ifndef NEURALOS_MESH_TOPOLOGY_HPP
+#define NEURALOS_MESH_TOPOLOGY_HPP
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace neuralOS { namespace L5 {
+namespace neuralOS { namespace mesh {
 
 struct NodeDescriptor {
     uint32_t    node_id     = 0;
@@ -43,6 +43,13 @@ struct TopologyDescriptor {
     }
 };
 
-}} // namespace neuralOS::L5
+}} // namespace neuralOS::mesh
 
-#endif // NEURALOS_L5_TOPOLOGY_HPP
+// Backward compatibility
+namespace neuralOS { namespace L5 {
+    using neuralOS::mesh::NodeDescriptor;
+    using neuralOS::mesh::EdgeDescriptor;
+    using neuralOS::mesh::TopologyDescriptor;
+}}
+
+#endif // NEURALOS_MESH_TOPOLOGY_HPP

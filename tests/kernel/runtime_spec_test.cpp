@@ -21,11 +21,11 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
     nf::RequestScheduler sched;
 
-    neuralOS::L2::RuntimeConfig cfg;
+    neuralOS::kernel::RuntimeConfig cfg;
     cfg.enable_spec = true;
     cfg.spec_cfg.tree_width = 2;
     cfg.spec_cfg.max_depth = 4;
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched, cfg);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched, cfg);
 
     CHECK(runtime.spec_engine() != nullptr, "spec_engine enabled");
 

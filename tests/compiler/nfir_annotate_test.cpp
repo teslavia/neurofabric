@@ -16,7 +16,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 static void test_annotate_basic() {
     /* Build a small graph with fusible pattern: DEQUANT → MATMUL */

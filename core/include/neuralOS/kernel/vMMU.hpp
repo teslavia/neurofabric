@@ -1,19 +1,19 @@
 /**
  * @file vMMU.hpp
- * @brief NeuralOS L2 — Virtual Memory Management Unit
+ * @brief NeuralOS kernel — Virtual Memory Management Unit
  *
  * Phase 36.2: Wraps PagedKVCache + ContextHub with:
  *   - CoW fork_sequence() for beam search / parallel sampling
  *   - cow_write() triggers physical copy on shared blocks
  *   - page_out() / page_in() for cold block eviction to host memory
- *   - radix_prefix_share() for ContextHub prefix → CoW sharing
+ *   - radix_prefix_share() for ContextHub prefix -> CoW sharing
  *   - PressureCallback for memory pressure notifications
  *
  * Header-only. All state lives in the wrapped PagedKVCache + ContextHub.
  */
 
-#ifndef NEURALOS_L2_VMMU_HPP
-#define NEURALOS_L2_VMMU_HPP
+#ifndef NEURALOS_KERNEL_VMMU_HPP
+#define NEURALOS_KERNEL_VMMU_HPP
 
 #include "neuralOS/kernel/ContextHub.hpp"
 #include "neuralOS/kernel/kv_cache.hpp"
@@ -27,7 +27,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  PressureCallback — invoked when memory usage exceeds threshold     */
@@ -242,6 +242,13 @@ private:
     PressureCallback                            pressure_cb_;
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_VMMU_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::PressureCallback;
+    using neuralOS::kernel::PageOutEntry;
+    using neuralOS::kernel::vMMU;
+}}
+
+#endif // NEURALOS_KERNEL_VMMU_HPP

@@ -1,12 +1,12 @@
 # ==================================================================
-# Neuro-Fabric — Tests
+# NeuralOS — Tests
 # ==================================================================
 
 # Helper: nf_add_test(NAME <exe> TEST_NAME <ctest_name> SOURCES <files...>
 #                     [LINKS <libs...>] [INCLUDES <dirs...>]
 #                     [GRAPH] [MODEL] [DEFS <defs...>])
 #   GRAPH  → adds nf_graph_objects + core/src include
-#   MODEL  → links nf_model_headers (gives "model/xxx.hpp")
+#   MODEL  → links neuralOS_model (gives "model/xxx.hpp")
 function(nf_add_test)
     cmake_parse_arguments(T "GRAPH;MODEL" "NAME;TEST_NAME" "SOURCES;LINKS;INCLUDES;DEFS" ${ARGN})
     set(_srcs ${T_SOURCES})
@@ -21,9 +21,9 @@ function(nf_add_test)
     if(T_GRAPH)
         target_include_directories(${T_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
     endif()
-    set(_libs nf_core ${T_LINKS})
+    set(_libs neuralOS_core ${T_LINKS})
     if(T_MODEL)
-        list(APPEND _libs nf_model_headers)
+        list(APPEND _libs neuralOS_model)
     endif()
     target_link_libraries(${T_NAME} PRIVATE ${_libs})
     foreach(d ${T_DEFS})
@@ -72,7 +72,7 @@ nf_add_test(NAME nf_mixtral_arch_test   TEST_NAME mixtral_arch     SOURCES model
 # kernel — moe routing
 nf_add_test(NAME nf_moe_routing_test    TEST_NAME moe_routing      SOURCES kernel/moe_routing_test.cpp)
 
-# ---- Standalone tests (no nf_core, custom includes) ----
+# ---- Standalone tests (no neuralOS_core, custom includes) ----
 add_executable(nf_pso_registry_test driver/pso_registry_test.cpp)
 target_include_directories(nf_pso_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/plugins/metal/src)
 add_test(NAME pso_registry COMMAND nf_pso_registry_test)

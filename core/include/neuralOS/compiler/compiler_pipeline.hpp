@@ -1,13 +1,13 @@
 /**
  * @file compiler_pipeline.hpp
- * @brief NeuralOS L1 — Compiler Pipeline
+ * @brief NeuralOS compiler — Compiler Pipeline
  *
- * Phase 43A.2: Chains DCE → CSE → ShapeInference → FusionPass.
+ * Phase 43A.2: Chains DCE -> CSE -> ShapeInference -> FusionPass.
  * Configurable: enable/disable individual passes.
  */
 
-#ifndef NEURALOS_L1_COMPILER_PIPELINE_HPP
-#define NEURALOS_L1_COMPILER_PIPELINE_HPP
+#ifndef NEURALOS_COMPILER_COMPILER_PIPELINE_HPP
+#define NEURALOS_COMPILER_COMPILER_PIPELINE_HPP
 
 #include "neuralOS/compiler/dce_pass.hpp"
 #include "neuralOS/compiler/cse_pass.hpp"
@@ -16,7 +16,7 @@
 
 #include <cstdint>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 struct CompileResult {
     uint32_t ops_removed    = 0;
@@ -64,6 +64,12 @@ private:
     FusionPass          fusion_;
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_COMPILER_PIPELINE_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::CompileResult;
+    using neuralOS::compiler::CompilerPipeline;
+}}
+
+#endif // NEURALOS_COMPILER_COMPILER_PIPELINE_HPP

@@ -1,6 +1,6 @@
 /**
  * @file async_dataflow.hpp
- * @brief NeuralOS L5 — Pathways-Style Async Dataflow
+ * @brief NeuralOS mesh — Pathways-Style Async Dataflow
  *
  * Phase 38.2: Control/data plane separation for distributed execution.
  *   - DataHandle: cross-node async data placeholder (Future-like)
@@ -8,8 +8,8 @@
  *   - DataPlane: actual tensor transfer via TransportOps
  */
 
-#ifndef NEURALOS_L5_ASYNC_DATAFLOW_HPP
-#define NEURALOS_L5_ASYNC_DATAFLOW_HPP
+#ifndef NEURALOS_MESH_ASYNC_DATAFLOW_HPP
+#define NEURALOS_MESH_ASYNC_DATAFLOW_HPP
 
 #include <atomic>
 #include <cstdint>
@@ -20,7 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace neuralOS { namespace L5 {
+namespace neuralOS { namespace mesh {
 
 /* ================================================================== */
 /*  DataHandle — async data placeholder (cross-node Future)            */
@@ -167,6 +167,13 @@ private:
     uint32_t prefetches_ = 0;
 };
 
-}} // namespace neuralOS::L5
+}} // namespace neuralOS::mesh
 
-#endif // NEURALOS_L5_ASYNC_DATAFLOW_HPP
+// Backward compatibility
+namespace neuralOS { namespace L5 {
+    using neuralOS::mesh::DataHandle;
+    using neuralOS::mesh::ControlPlane;
+    using neuralOS::mesh::DataPlane;
+}}
+
+#endif // NEURALOS_MESH_ASYNC_DATAFLOW_HPP

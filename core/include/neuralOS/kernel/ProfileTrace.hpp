@@ -14,8 +14,8 @@
  *   - Per-task: queue wait, dispatch latency, total latency
  */
 
-#ifndef NF_PROFILE_TRACE_HPP
-#define NF_PROFILE_TRACE_HPP
+#ifndef NEURALOS_KERNEL_PROFILE_TRACE_HPP
+#define NEURALOS_KERNEL_PROFILE_TRACE_HPP
 
 #include <chrono>
 #include <cstdint>
@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 using SteadyClock = std::chrono::steady_clock;
 using TimePoint   = SteadyClock::time_point;
@@ -170,6 +170,16 @@ inline double duration_us(TimePoint from, TimePoint to) {
     return std::chrono::duration_cast<Duration>(to - from).count();
 }
 
-} // namespace nf
+}} // neuralOS::kernel
 
-#endif // NF_PROFILE_TRACE_HPP
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::SteadyClock;
+    using neuralOS::kernel::TimePoint;
+    using neuralOS::kernel::Duration;
+    using neuralOS::kernel::TaskProfile;
+    using neuralOS::kernel::GraphProfile;
+    using neuralOS::kernel::duration_us;
+}
+
+#endif // NEURALOS_KERNEL_PROFILE_TRACE_HPP

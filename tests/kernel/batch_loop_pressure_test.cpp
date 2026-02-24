@@ -21,10 +21,10 @@ int main() {
     kv.init(16, 4, 2, 4, 64);
     nf::RequestScheduler sched;
 
-    neuralOS::L2::RuntimeConfig cfg;
+    neuralOS::kernel::RuntimeConfig cfg;
     cfg.vmmu_cfg.pressure_threshold = 0.75f;
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched, cfg);
-    neuralOS::L2::BatchInferenceLoop loop(&runtime, &kv, &sched);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched, cfg);
+    neuralOS::kernel::BatchInferenceLoop loop(&runtime, &kv, &sched);
 
     /* Submit requests */
     for (int i = 0; i < 3; ++i) {

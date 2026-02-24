@@ -21,8 +21,8 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
     nf::RequestScheduler sched;
 
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched);
-    neuralOS::L2::BatchInferenceLoop loop(&runtime, &kv, &sched);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched);
+    neuralOS::kernel::BatchInferenceLoop loop(&runtime, &kv, &sched);
 
     /* Submit 4 requests */
     for (int i = 0; i < 4; ++i) {

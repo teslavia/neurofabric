@@ -21,7 +21,7 @@ int main() {
     cfg.tree_width = 3;
     cfg.max_depth = 6;
 
-    neuralOS::L2::SpecEngine engine(cfg);
+    neuralOS::kernel::SpecEngine engine(cfg);
     auto& tree = engine.tree();
 
     /* Build a tree:
@@ -61,7 +61,7 @@ int main() {
     CHECK(engine.num_checkpoints() == 1, "1 checkpoint");
 
     /* Test restore */
-    neuralOS::L2::SpecCheckpoint restored;
+    neuralOS::kernel::SpecCheckpoint restored;
     CHECK(engine.restore(&restored), "restore succeeded");
     CHECK(restored.seq_idx == 0, "restored seq_idx");
     CHECK(restored.num_tokens == 100, "restored num_tokens");
@@ -72,7 +72,7 @@ int main() {
     CHECK(tree.total_nodes == 1, "only root remains");
 
     /* Test restore with no checkpoints */
-    neuralOS::L2::SpecCheckpoint empty;
+    neuralOS::kernel::SpecCheckpoint empty;
     CHECK(!engine.restore(&empty), "restore fails with no checkpoints");
 
     /* Test multiple checkpoints (LIFO) */
@@ -80,7 +80,7 @@ int main() {
     engine.checkpoint(2, 300, 15);
     CHECK(engine.num_checkpoints() == 2, "2 checkpoints");
 
-    neuralOS::L2::SpecCheckpoint cp2;
+    neuralOS::kernel::SpecCheckpoint cp2;
     engine.restore(&cp2);
     CHECK(cp2.seq_idx == 2, "LIFO: last checkpoint first");
     engine.restore(&cp2);

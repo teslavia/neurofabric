@@ -26,8 +26,8 @@ int main() {
     printf("=== Transport Abstraction Test ===\n");
 
     /* Test 1: TCP transport creation */
-    auto tcp = neuralOS::transport::make_tcp_transport();
-    CHECK(tcp.kind == neuralOS::transport::TransportKind::TCP, "TCP kind");
+    auto tcp = neuralOS::mesh::transport::make_tcp_transport();
+    CHECK(tcp.kind == neuralOS::mesh::transport::TransportKind::TCP, "TCP kind");
     CHECK(!tcp.is_connected, "not connected initially");
 
     /* Test 2: Connect to a real loopback server */
@@ -79,16 +79,16 @@ int main() {
     ::close(srv_fd);
 
     /* Test 6: select_transport (should return TCP without NF_HAS_RDMA) */
-    auto selected = neuralOS::transport::select_transport();
+    auto selected = neuralOS::mesh::transport::select_transport();
 #ifdef NF_HAS_RDMA
-    CHECK(selected.kind == neuralOS::transport::TransportKind::RDMA, "RDMA selected");
+    CHECK(selected.kind == neuralOS::mesh::transport::TransportKind::RDMA, "RDMA selected");
 #else
-    CHECK(selected.kind == neuralOS::transport::TransportKind::TCP, "TCP selected (no RDMA)");
+    CHECK(selected.kind == neuralOS::mesh::transport::TransportKind::TCP, "TCP selected (no RDMA)");
 #endif
 
     /* Test 7: select_transport with scheme */
-    auto tcp2 = neuralOS::transport::select_transport("tcp://localhost:1234");
-    CHECK(tcp2.kind == neuralOS::transport::TransportKind::TCP, "tcp scheme");
+    auto tcp2 = neuralOS::mesh::transport::select_transport("tcp://localhost:1234");
+    CHECK(tcp2.kind == neuralOS::mesh::transport::TransportKind::TCP, "tcp scheme");
 
     printf("PASS: all transport abstraction tests passed\n");
     return 0;

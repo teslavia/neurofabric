@@ -30,13 +30,13 @@ int main() {
     nf::RequestScheduler sched;
 
     /* Create NeuralOSRuntime */
-    neuralOS::L2::RuntimeConfig cfg;
+    neuralOS::kernel::RuntimeConfig cfg;
     cfg.vmmu_cfg.pressure_threshold = 0.8f;
     cfg.cfs_cfg.preempt_threshold = 4;
-    auto runtime = std::make_unique<neuralOS::L2::NeuralOSRuntime>(&kv, &sched, cfg);
+    auto runtime = std::make_unique<neuralOS::kernel::NeuralOSRuntime>(&kv, &sched, cfg);
 
     /* Create BatchInferenceLoop */
-    neuralOS::L2::BatchInferenceLoop batch(runtime.get(), &kv, &sched);
+    neuralOS::kernel::BatchInferenceLoop batch(runtime.get(), &kv, &sched);
 
     /* ---- Test 1: Submit 5 concurrent requests ---- */
     std::fprintf(stderr, "[e2e_neuralOS] test 1: 5 concurrent requests\n");
@@ -87,34 +87,34 @@ int main() {
     /* ---- Test 4: CompilerPipeline integration ---- */
     std::fprintf(stderr, "[e2e_neuralOS] test 4: compiler pipeline\n");
 
-    neuralOS::L1::NfirHighGraph graph;
+    neuralOS::compiler::NfirHighGraph graph;
 
     /* Create tensors for the chain */
-    neuralOS::L1::NfirTensorRef t0; t0.name = "tokens";
+    neuralOS::compiler::NfirTensorRef t0; t0.name = "tokens";
     uint32_t tid0 = graph.add_tensor(t0);
-    neuralOS::L1::NfirTensorRef t1; t1.name = "embed_out";
+    neuralOS::compiler::NfirTensorRef t1; t1.name = "embed_out";
     uint32_t tid1 = graph.add_tensor(t1);
-    neuralOS::L1::NfirTensorRef t2; t2.name = "attn_out";
+    neuralOS::compiler::NfirTensorRef t2; t2.name = "attn_out";
     uint32_t tid2 = graph.add_tensor(t2);
-    neuralOS::L1::NfirTensorRef t3; t3.name = "ffn_out";
+    neuralOS::compiler::NfirTensorRef t3; t3.name = "ffn_out";
     uint32_t tid3 = graph.add_tensor(t3);
 
-    neuralOS::L1::NfirHighOp op1;
-    op1.kind = neuralOS::L1::HighOpKind::EMBEDDING;
+    neuralOS::compiler::NfirHighOp op1;
+    op1.kind = neuralOS::compiler::HighOpKind::EMBEDDING;
     op1.name = "embed";
     op1.input_ids.push_back(tid0);
     op1.output_ids.push_back(tid1);
     graph.add_op(op1);
 
-    neuralOS::L1::NfirHighOp op2;
-    op2.kind = neuralOS::L1::HighOpKind::ATTENTION;
+    neuralOS::compiler::NfirHighOp op2;
+    op2.kind = neuralOS::compiler::HighOpKind::ATTENTION;
     op2.name = "attn";
     op2.input_ids.push_back(tid1);
     op2.output_ids.push_back(tid2);
     graph.add_op(op2);
 
-    neuralOS::L1::NfirHighOp op3;
-    op3.kind = neuralOS::L1::HighOpKind::FFN_BLOCK;
+    neuralOS::compiler::NfirHighOp op3;
+    op3.kind = neuralOS::compiler::HighOpKind::FFN_BLOCK;
     op3.name = "ffn";
     op3.input_ids.push_back(tid2);
     op3.output_ids.push_back(tid3);
@@ -124,7 +124,7 @@ int main() {
     graph.add_edge(1, 2);
     graph.output_tensor_ids.push_back(tid3);
 
-    neuralOS::L1::CompilerPipeline compiler;
+    neuralOS::compiler::CompilerPipeline compiler;
     auto cr = compiler.run(&graph);
     std::fprintf(stderr, "[e2e_neuralOS]   compiler: removed=%u merged=%u shapes=%u fusions=%u\n",
                  cr.ops_removed, cr.ops_merged, cr.shapes_inferred, cr.fusions_found);
@@ -137,10 +137,10 @@ int main() {
     kv2.init(8, 4, 2, 2, 32);  /* tiny: 8 blocks only */
     nf::RequestScheduler sched2;
 
-    neuralOS::L2::RuntimeConfig cfg2;
+    neuralOS::kernel::RuntimeConfig cfg2;
     cfg2.vmmu_cfg.pressure_threshold = 0.5f;
-    auto runtime2 = std::make_unique<neuralOS::L2::NeuralOSRuntime>(&kv2, &sched2, cfg2);
-    neuralOS::L2::BatchInferenceLoop batch2(runtime2.get(), &kv2, &sched2);
+    auto runtime2 = std::make_unique<neuralOS::kernel::NeuralOSRuntime>(&kv2, &sched2, cfg2);
+    neuralOS::kernel::BatchInferenceLoop batch2(runtime2.get(), &kv2, &sched2);
 
     /* Submit requests to create pressure */
     for (int i = 0; i < 4; ++i) {

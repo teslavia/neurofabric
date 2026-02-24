@@ -17,8 +17,8 @@
 int main() {
     printf("=== Async Dataflow Test ===\n");
 
-    neuralOS::L5::ControlPlane ctrl;
-    neuralOS::L5::DataPlane data;
+    neuralOS::mesh::ControlPlane ctrl;
+    neuralOS::mesh::DataPlane data;
 
     /* Test 1: Dispatch async handles */
     uint64_t h1 = ctrl.dispatch_async(0, 1, "hidden_state", 4096);
@@ -41,7 +41,7 @@ int main() {
 
     /* Test 4: Callback on resolve */
     bool callback_fired = false;
-    ctrl.on_resolve(h2, [&](neuralOS::L5::DataHandle* h) {
+    ctrl.on_resolve(h2, [&](neuralOS::mesh::DataHandle* h) {
         callback_fired = true;
         CHECK(h->handle_id == h2, "callback has correct handle");
     });

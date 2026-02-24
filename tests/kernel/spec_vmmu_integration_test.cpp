@@ -21,12 +21,12 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
 
     nf::ContextHub hub(1024 * 1024, NF_EVICT_LRU);
-    neuralOS::L2::vMMU vmmu(&kv, &hub);
+    neuralOS::kernel::vMMU vmmu(&kv, &hub);
 
     nf::SpeculativeConfig cfg;
     cfg.tree_width = 3;
     cfg.max_depth = 4;
-    neuralOS::L2::SpecEngine engine(cfg);
+    neuralOS::kernel::SpecEngine engine(cfg);
     engine.set_vmmu(&vmmu, &kv);
 
     /* Build tree with seq_idx on branches */
@@ -54,7 +54,7 @@ int main() {
     CHECK(engine.freed_sequences() == 2, "2 sequences freed via KV cleanup");
 
     /* Test 2: SpecEngine without vMMU — no crash */
-    neuralOS::L2::SpecEngine engine2(cfg);
+    neuralOS::kernel::SpecEngine engine2(cfg);
     auto* root2 = engine2.tree().root.get();
     auto b2 = engine2.branch(root2, {10, 20});
     for (auto* b : b2) b->seq_idx = 42;

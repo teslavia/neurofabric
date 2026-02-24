@@ -1,13 +1,13 @@
 /**
  * @file cxl_memory.hpp
- * @brief NeuralOS L5 — CXL 3.0 Memory Domain Abstraction
+ * @brief NeuralOS mesh — CXL 3.0 Memory Domain Abstraction
  *
  * Phase 38.4: CXL GFAM (Global Fabric Attached Memory) stub.
  * Maps to POSIX shared memory for simulation. Interface-first design.
  */
 
-#ifndef NEURALOS_L5_CXL_MEMORY_HPP
-#define NEURALOS_L5_CXL_MEMORY_HPP
+#ifndef NEURALOS_MESH_CXL_MEMORY_HPP
+#define NEURALOS_MESH_CXL_MEMORY_HPP
 
 #include <chrono>
 #include <cstdint>
@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace neuralOS { namespace L5 {
+namespace neuralOS { namespace mesh {
 
 /* ================================================================== */
 /*  CXL Memory Domain IDs (extend neuro_buffer_abi.h)                  */
@@ -126,6 +126,14 @@ private:
     std::unordered_map<uint64_t, CxlAllocation> allocs_;
 };
 
-}} // namespace neuralOS::L5
+}} // namespace neuralOS::mesh
 
-#endif // NEURALOS_L5_CXL_MEMORY_HPP
+// Backward compatibility
+namespace neuralOS { namespace L5 {
+    using neuralOS::mesh::NF_MEM_DOMAIN_CXL;
+    using neuralOS::mesh::NF_MEM_DOMAIN_CXL_SHARED;
+    using neuralOS::mesh::CxlAllocation;
+    using neuralOS::mesh::CxlMemoryPool;
+}}
+
+#endif // NEURALOS_MESH_CXL_MEMORY_HPP

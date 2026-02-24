@@ -17,8 +17,8 @@
  *   C++ plugin internals (Metal/RKNN)
  */
 
-#ifndef NF_TENSOR_VIEW_HPP
-#define NF_TENSOR_VIEW_HPP
+#ifndef NEURALOS_KERNEL_TENSOR_VIEW_HPP
+#define NEURALOS_KERNEL_TENSOR_VIEW_HPP
 
 #include "neuralOS/ddi/neuro_buffer_abi.h"
 
@@ -29,7 +29,7 @@
 #include <array>
 #include <utility>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /* ------------------------------------------------------------------ */
 /*  Compile-time dtype → C++ type mapping                              */
@@ -308,6 +308,14 @@ private:
     uint64_t slice_stride_ = 0;
 };
 
-} // namespace nf
+}} // neuralOS::kernel
 
-#endif // NF_TENSOR_VIEW_HPP
+// Backward compatibility
+namespace nf {
+    template <nf_dtype D> using dtype_traits = neuralOS::kernel::dtype_traits<D>;
+    template <nf_dtype D> using dtype_t = neuralOS::kernel::dtype_t<D>;
+    template <typename T> using MappedSpan = neuralOS::kernel::MappedSpan<T>;
+    using neuralOS::kernel::TensorView;
+}
+
+#endif // NEURALOS_KERNEL_TENSOR_VIEW_HPP

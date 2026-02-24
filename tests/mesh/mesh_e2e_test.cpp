@@ -24,9 +24,9 @@ int main() {
     std::fprintf(stderr, "[mesh_e2e] starting...\n");
 
     /* ---- Setup MeshCoordinator ---- */
-    neuralOS::L5::MeshCoordinator::Config cfg;
+    neuralOS::mesh::MeshCoordinator::Config cfg;
     cfg.heartbeat_timeout_ms = 2000;
-    neuralOS::L5::MeshCoordinator coord(cfg);
+    neuralOS::mesh::MeshCoordinator coord(cfg);
 
     /* Register coordinator (node 0) and worker (node 1) */
     bool ok = coord.register_node(0, "coordinator", "localhost:9000",

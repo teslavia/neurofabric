@@ -1,8 +1,8 @@
 """
-neurofabric.py — Zero-dependency ctypes binding for libnf_c_api
+neuralos.py — Zero-dependency ctypes binding for neuralOS_c_api
 
 Usage:
-    from neurofabric import Engine, Session
+    from neuralos import Engine, Session
 
     engine = Engine(n_threads=4)
     session = Session(engine, "model.nfir")
@@ -17,18 +17,18 @@ import sys
 
 
 def _find_library():
-    """Locate nf_c_api shared library."""
+    """Locate neuralOS_c_api shared library."""
     env = os.environ.get("NF_LIB_PATH")
     if env and os.path.isfile(env):
         return env
 
     here = pathlib.Path(__file__).resolve().parent
     if sys.platform == "darwin":
-        name = "nf_c_api.dylib"
+        name = "neuralOS_c_api.dylib"
     elif sys.platform == "win32":
-        name = "nf_c_api.dll"
+        name = "neuralOS_c_api.dll"
     else:
-        name = "nf_c_api.so"
+        name = "neuralOS_c_api.so"
 
     candidates = [
         here / ".." / "build" / "lib" / name,

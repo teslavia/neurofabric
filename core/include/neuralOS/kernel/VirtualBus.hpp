@@ -1,6 +1,6 @@
 /**
  * @file VirtualBus.hpp
- * @brief NeuralOS L2 — Virtual Interconnect Bus
+ * @brief NeuralOS kernel — Virtual Interconnect Bus
  *
  * Phase 36.5: Topology graph with routing and DAG splitting.
  *   - TopologyGraph: nodes/edges with bandwidth, latency, hops
@@ -9,11 +9,11 @@
  *   - bandwidth_query(): query available bandwidth between nodes
  *   - split_graph(): partition DAG across providers (Phase 37 ILP interface)
  *
- * Header-only. Uses L5 topology descriptors.
+ * Header-only. Uses mesh topology descriptors.
  */
 
-#ifndef NEURALOS_L2_VIRTUALBUS_HPP
-#define NEURALOS_L2_VIRTUALBUS_HPP
+#ifndef NEURALOS_KERNEL_VIRTUALBUS_HPP
+#define NEURALOS_KERNEL_VIRTUALBUS_HPP
 
 #include "neuralOS/mesh/topology.hpp"
 
@@ -25,20 +25,20 @@
 #include <unordered_map>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  TopologyGraph — weighted directed graph of compute nodes           */
 /* ================================================================== */
 
 struct TopologyGraph {
-    L5::TopologyDescriptor topo;
+    mesh::TopologyDescriptor topo;
 
-    void add_node(const L5::NodeDescriptor& node) {
+    void add_node(const mesh::NodeDescriptor& node) {
         topo.nodes.push_back(node);
     }
 
-    void add_edge(const L5::EdgeDescriptor& edge) {
+    void add_edge(const mesh::EdgeDescriptor& edge) {
         topo.edges.push_back(edge);
     }
 
@@ -84,7 +84,7 @@ public:
                            const std::string& address,
                            uint64_t memory_bytes, uint64_t flops,
                            bool is_local = false) {
-        L5::NodeDescriptor nd;
+        mesh::NodeDescriptor nd;
         nd.node_id      = node_id;
         nd.name         = name;
         nd.address      = address;
@@ -97,7 +97,7 @@ public:
     void add_link(uint32_t src, uint32_t dst,
                   double bandwidth_gbps, double latency_us,
                   uint32_t hops = 1) {
-        L5::EdgeDescriptor ed;
+        mesh::EdgeDescriptor ed;
         ed.src_node      = src;
         ed.dst_node      = dst;
         ed.bandwidth_gbps = bandwidth_gbps;
@@ -231,6 +231,14 @@ private:
     TopologyGraph graph_;
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_VIRTUALBUS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::TopologyGraph;
+    using neuralOS::kernel::RouteResult;
+    using neuralOS::kernel::GraphPartition;
+    using neuralOS::kernel::VirtualBus;
+}}
+
+#endif // NEURALOS_KERNEL_VIRTUALBUS_HPP

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""NeuroFabric quickstart — demonstrates Generator API."""
+"""NeuralOS quickstart — demonstrates Generator API."""
 
-from neurofabric import Generator
+from neuralos import Generator
 
 
 def main():

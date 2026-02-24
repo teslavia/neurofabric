@@ -21,7 +21,7 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
     nf::RequestScheduler sched;
 
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched);
 
     auto* hub = runtime.context_hub();
     CHECK(hub != nullptr, "context_hub accessible");

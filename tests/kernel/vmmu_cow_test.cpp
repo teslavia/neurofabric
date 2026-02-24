@@ -22,7 +22,7 @@ int main() {
     kv.init(32, 4, 2, 4, 64);
 
     /* No ContextHub needed for CoW tests */
-    neuralOS::L2::vMMU vmmu(&kv, nullptr);
+    neuralOS::kernel::vMMU vmmu(&kv, nullptr);
 
     /* Allocate a source sequence and fill some tokens */
     uint32_t src = kv.alloc_sequence();

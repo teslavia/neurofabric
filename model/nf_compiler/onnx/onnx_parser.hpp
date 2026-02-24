@@ -7,8 +7,8 @@
  * No external protobuf dependency.
  */
 
-#ifndef NEURALOS_ONNX_PARSER_HPP
-#define NEURALOS_ONNX_PARSER_HPP
+#ifndef NEURALOS_COMPILER_ONNX_PARSER_HPP
+#define NEURALOS_COMPILER_ONNX_PARSER_HPP
 
 #include <cstdint>
 #include <cstring>
@@ -21,7 +21,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-namespace neuralOS { namespace onnx {
+namespace neuralOS { namespace compiler { namespace onnx {
 
 /* ================================================================== */
 /*  Protobuf Wire Types                                                */
@@ -390,6 +390,36 @@ inline bool load_onnx_file(const char* path, OnnxModel* model) {
 #endif
 }
 
+}}} // namespace neuralOS::compiler::onnx
+
+/* ================================================================== */
+/*  Backward-compat alias: neuralOS::onnx → neuralOS::compiler::onnx  */
+/* ================================================================== */
+namespace neuralOS { namespace onnx {
+    using neuralOS::compiler::onnx::WireType;
+    using neuralOS::compiler::onnx::OnnxDataType;
+    using neuralOS::compiler::onnx::OnnxTensorType;
+    using neuralOS::compiler::onnx::OnnxAttribute;
+    using neuralOS::compiler::onnx::OnnxNode;
+    using neuralOS::compiler::onnx::OnnxTensor;
+    using neuralOS::compiler::onnx::OnnxValueInfo;
+    using neuralOS::compiler::onnx::OnnxGraph;
+    using neuralOS::compiler::onnx::OnnxModel;
+    using neuralOS::compiler::onnx::ProtobufReader;
+    using neuralOS::compiler::onnx::OnnxParser;
+    using neuralOS::compiler::onnx::load_onnx_file;
+    using neuralOS::compiler::onnx::ONNX_UNDEFINED;
+    using neuralOS::compiler::onnx::ONNX_FLOAT;
+    using neuralOS::compiler::onnx::ONNX_UINT8;
+    using neuralOS::compiler::onnx::ONNX_INT8;
+    using neuralOS::compiler::onnx::ONNX_FLOAT16;
+    using neuralOS::compiler::onnx::ONNX_INT32;
+    using neuralOS::compiler::onnx::ONNX_INT64;
+    using neuralOS::compiler::onnx::ONNX_BFLOAT16;
+    using neuralOS::compiler::onnx::VARINT;
+    using neuralOS::compiler::onnx::FIXED64;
+    using neuralOS::compiler::onnx::LENGTH;
+    using neuralOS::compiler::onnx::FIXED32;
 }} // namespace neuralOS::onnx
 
-#endif // NEURALOS_ONNX_PARSER_HPP
+#endif // NEURALOS_COMPILER_ONNX_PARSER_HPP

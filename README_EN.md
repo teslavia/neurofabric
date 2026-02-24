@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">⚡️ NeuroFabric</h1>
+  <h1 align="center">⚡️ NeuralOS</h1>
   <p align="center">
     <strong>A Microkernel Heterogeneous LLM Inference Engine for Edge &amp; Cloud</strong><br/>
     <em>Zero-vptr Hourglass ABI · 59 Metal GPU Kernels · NeuralOS 5-Layer Architecture · PagedAttention · Speculative Decoding · Distributed DAG Scheduling</em>
@@ -24,9 +24,9 @@
 
 ---
 
-## Why NeuroFabric?
+## Why NeuralOS?
 
-Most inference engines are monoliths — welded to one vendor SDK, one memory model, one execution topology. NeuroFabric is the opposite: a **microkernel** that owns nothing but the scheduling contract. All compute, memory, and transport are delegated to **dynamically loaded plugins** communicating through a **zero-vtable C11 ABI boundary**.
+Most inference engines are monoliths — welded to one vendor SDK, one memory model, one execution topology. NeuralOS is the opposite: a **microkernel** that owns nothing but the scheduling contract. All compute, memory, and transport are delegated to **dynamically loaded plugins** communicating through a **zero-vtable C11 ABI boundary**.
 
 The same binary runs a 7B LLaMA on Apple Metal at ~45 tok/s (fused FP16), drives Rockchip NPU zero-copy inference on an RK3588, or splits a DAG across both over TCP — with the scheduler routing sub-graphs to the optimal accelerator automatically.
 
@@ -283,7 +283,7 @@ cmake --build build -j$(nproc)
 ### 3. Python Binding
 
 ```python
-from neurofabric import Engine, Session
+from neuralos import Engine, Session
 
 engine = Engine(n_threads=4)
 session = Session(engine, "model.nfir")
@@ -412,7 +412,7 @@ All formats have both FP32 and FP16 dequantization kernels. Q4_0 additionally ha
 
 ## Multi-Architecture Support
 
-NeuroFabric uses a **strategy pattern** for architecture-specific behavior. Each architecture registers its own weight naming, attention, RoPE, FFN, and normalization strategies:
+NeuralOS uses a **strategy pattern** for architecture-specific behavior. Each architecture registers its own weight naming, attention, RoPE, FFN, and normalization strategies:
 
 | Feature | LLaMA | Mistral | Phi-3 |
 |---------|-------|---------|-------|
@@ -511,7 +511,7 @@ neurofabric/                              ~35K LOC · 64 tests
 │   ├── devices/                          Device deploy configs
 │   └── docker/                           Docker cross-compile environments
 ├── python/
-│   ├── neurofabric.py                    Zero-dependency ctypes binding
+│   ├── neuralos.py                    Zero-dependency ctypes binding
 │   └── autoregressive_inference.py       Python inference example
 ├── tests/                                64 test files, organized by layer
 │   ├── compiler/                      Compiler tests (4)
@@ -528,7 +528,7 @@ neurofabric/                              ~35K LOC · 64 tests
 
 ## Evolution Roadmap
 
-NeuroFabric has evolved through 40 phases. Here's the journey:
+NeuralOS has evolved through 40 phases. Here's the journey:
 
 | Phase | Status | Description |
 |-------|--------|-------------|
@@ -573,7 +573,7 @@ NeuroFabric has evolved through 40 phases. Here's the journey:
 ## License
 
 ```
-Copyright 2025 NeuroFabric Contributors
+Copyright 2025 NeuralOS Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

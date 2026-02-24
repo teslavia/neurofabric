@@ -1,17 +1,17 @@
 /**
  * @file kv_migration.hpp
- * @brief NeuralOS L5 — KV Cache Cross-Node Hot Migration
+ * @brief NeuralOS mesh — KV Cache Cross-Node Hot Migration
  *
  * Phase 38.3: Live migration of KV cache sequences between nodes.
- *   - serialize_kv(): SequenceKV → wire format
- *   - deserialize_kv(): wire format → SequenceKV
- *   - live_migrate(): CoW fork → transfer → switch (no interruption)
+ *   - serialize_kv(): SequenceKV -> wire format
+ *   - deserialize_kv(): wire format -> SequenceKV
+ *   - live_migrate(): CoW fork -> transfer -> switch (no interruption)
  *
  * Links vMMU (CoW fork) + CFS (pause/resume) + TransportOps.
  */
 
-#ifndef NEURALOS_L5_KV_MIGRATION_HPP
-#define NEURALOS_L5_KV_MIGRATION_HPP
+#ifndef NEURALOS_MESH_KV_MIGRATION_HPP
+#define NEURALOS_MESH_KV_MIGRATION_HPP
 
 #include "neuralOS/kernel/kv_cache.hpp"
 
@@ -19,7 +19,7 @@
 #include <cstring>
 #include <vector>
 
-namespace neuralOS { namespace L5 {
+namespace neuralOS { namespace mesh {
 
 /* ================================================================== */
 /*  KVSerializedBlock — wire format for one KV block                   */
@@ -136,6 +136,13 @@ public:
     }
 };
 
-}} // namespace neuralOS::L5
+}} // namespace neuralOS::mesh
 
-#endif // NEURALOS_L5_KV_MIGRATION_HPP
+// Backward compatibility
+namespace neuralOS { namespace L5 {
+    using neuralOS::mesh::KVSerializedBlock;
+    using neuralOS::mesh::KVSerializedSequence;
+    using neuralOS::mesh::KVMigrator;
+}}
+
+#endif // NEURALOS_MESH_KV_MIGRATION_HPP

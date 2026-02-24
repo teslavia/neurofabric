@@ -21,8 +21,8 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
     nf::RequestScheduler sched;
 
-    neuralOS::L2::RuntimeConfig cfg;
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched, cfg);
+    neuralOS::kernel::RuntimeConfig cfg;
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched, cfg);
 
     /* Subsystem accessors */
     CHECK(runtime.vmmu() != nullptr, "vmmu accessible");

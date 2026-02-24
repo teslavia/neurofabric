@@ -41,7 +41,7 @@ int main() {
 
     /* Test 1: No callback → counter still works (backward compat) */
     {
-        neuralOS::L5::DataPlane dp;
+        neuralOS::mesh::DataPlane dp;
         uint8_t data[64] = {};
         CHECK(dp.transfer(1, 2, data, 64), "transfer without callback succeeds");
         CHECK(dp.num_transfers() == 1, "transfer counted");
@@ -52,7 +52,7 @@ int main() {
     /* Test 2: Set transport callback → verify called with correct args */
     {
         g_transport_calls = 0;
-        neuralOS::L5::DataPlane dp;
+        neuralOS::mesh::DataPlane dp;
         dp.set_transport(mock_transport);
 
         uint8_t data[128] = {};
@@ -66,7 +66,7 @@ int main() {
 
     /* Test 3: Transfer failure → propagated */
     {
-        neuralOS::L5::DataPlane dp;
+        neuralOS::mesh::DataPlane dp;
         dp.set_transport(mock_transport_fail);
 
         uint8_t data[64] = {};
@@ -77,7 +77,7 @@ int main() {
     /* Test 4: Prefetch callback */
     {
         g_prefetch_calls = 0;
-        neuralOS::L5::DataPlane dp;
+        neuralOS::mesh::DataPlane dp;
         dp.set_prefetch(mock_prefetch);
 
         dp.prefetch(1, 2, "weights");

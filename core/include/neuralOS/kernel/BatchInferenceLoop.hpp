@@ -1,13 +1,13 @@
 /**
  * @file BatchInferenceLoop.hpp
- * @brief NeuralOS L2 — Continuous Batching Engine
+ * @brief NeuralOS kernel — Continuous Batching Engine
  *
  * Phase 43B.1: Wraps NeuralOSRuntime for batched scheduling steps.
  * Thread-safe submit, step-based scheduling with VTC accounting.
  */
 
-#ifndef NEURALOS_L2_BATCH_INFERENCE_LOOP_HPP
-#define NEURALOS_L2_BATCH_INFERENCE_LOOP_HPP
+#ifndef NEURALOS_KERNEL_BATCH_INFERENCE_LOOP_HPP
+#define NEURALOS_KERNEL_BATCH_INFERENCE_LOOP_HPP
 
 #include "neuralOS/kernel/NeuralOSRuntime.hpp"
 
@@ -15,7 +15,7 @@
 #include <mutex>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 struct BatchStepResult {
     uint32_t num_selected  = 0;
@@ -106,6 +106,12 @@ private:
     mutable std::mutex     mu_;
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_BATCH_INFERENCE_LOOP_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::BatchStepResult;
+    using neuralOS::kernel::BatchInferenceLoop;
+}}
+
+#endif // NEURALOS_KERNEL_BATCH_INFERENCE_LOOP_HPP

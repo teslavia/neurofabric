@@ -1,5 +1,5 @@
 # ==================================================================
-# Neuro-Fabric — CUDA Plugin (stub with CPU fallback)
+# NeuralOS — CUDA Plugin (stub with CPU fallback)
 # ==================================================================
 
 add_library(nf_plugin_cuda STATIC
@@ -10,7 +10,7 @@ target_include_directories(nf_plugin_cuda PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
 )
 
-target_link_libraries(nf_plugin_cuda PRIVATE nf_core)
+target_link_libraries(nf_plugin_cuda PRIVATE neuralOS_core)
 
 # If real CUDA toolkit is available
 if(CMAKE_CUDA_COMPILER)

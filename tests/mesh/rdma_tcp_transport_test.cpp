@@ -22,7 +22,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::transport;
+using namespace neuralOS::mesh::transport;
 
 static void test_tcp_loopback() {
     /* Start a simple echo server on a random port */

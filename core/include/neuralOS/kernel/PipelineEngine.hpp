@@ -23,8 +23,8 @@
  *           in the ContextHub after completion.
  */
 
-#ifndef NF_PIPELINE_ENGINE_HPP
-#define NF_PIPELINE_ENGINE_HPP
+#ifndef NEURALOS_KERNEL_PIPELINE_ENGINE_HPP
+#define NEURALOS_KERNEL_PIPELINE_ENGINE_HPP
 
 #include "neuralOS/ddi/neuro_scheduler_abi.h"
 #include "neuralOS/ddi/neuro_ddi.h"
@@ -46,7 +46,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  ThreadPool — fixed-size, lock-based work queue                     */
@@ -175,7 +175,7 @@ public:
         providers_.push_back(std::move(slot));
 
         /* Auto-populate driver registry */
-        neuralOS::L4::DriverCaps caps;
+        neuralOS::driver::DriverCaps caps;
         caps.name = providers_.back().name;
         caps.affinity = affinity;
         registry_.register_driver(handle, vt, caps);
@@ -204,7 +204,7 @@ public:
             if (ddi_vt.query_caps(providers_[idx].handle, &hw_caps) == NF_OK) {
                 /* Update existing registry entry */
                 auto& entries = registry_;
-                neuralOS::L4::DriverCaps updated;
+                neuralOS::driver::DriverCaps updated;
                 updated.name = providers_[idx].name;
                 updated.affinity = providers_[idx].affinity;
                 updated.max_concurrent = hw_caps.max_concurrent;
@@ -228,7 +228,7 @@ public:
         return count;
     }
 
-    const neuralOS::L4::DriverRegistry& registry() const { return registry_; }
+    const neuralOS::driver::DriverRegistry& registry() const { return registry_; }
 
     /* -- Profiling Access ------------------------------------------- */
 
@@ -683,9 +683,17 @@ private:
     std::unordered_map<uint32_t,
         std::shared_ptr<GraphProfile>>          profiles_;
     uint32_t                                    next_graph_id_ = 0;
-    neuralOS::L4::DriverRegistry                registry_;
+    neuralOS::driver::DriverRegistry                registry_;
 };
 
-} // namespace nf
+}} // neuralOS::kernel
 
-#endif // NF_PIPELINE_ENGINE_HPP
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::ThreadPool;
+    using neuralOS::kernel::TaskNode;
+    using neuralOS::kernel::ProviderSlot;
+    using neuralOS::kernel::PipelineEngine;
+}
+
+#endif // NEURALOS_KERNEL_PIPELINE_ENGINE_HPP

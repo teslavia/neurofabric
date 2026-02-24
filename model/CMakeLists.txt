@@ -1,6 +1,6 @@
 # ==================================================================
-# Neuro-Fabric — Model Layer (Layer 2): header-only model libraries
+# NeuralOS — Model Layer: header-only model libraries
 # ==================================================================
 
-add_library(nf_model_headers INTERFACE)
-target_include_directories(nf_model_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(neuralOS_model INTERFACE)
+target_include_directories(neuralOS_model INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})

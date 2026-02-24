@@ -1,6 +1,6 @@
 /**
  * @file NeuralOSRuntime.hpp
- * @brief NeuralOS L2 — Unified Kernel Orchestrator
+ * @brief NeuralOS kernel — Unified Kernel Orchestrator
  *
  * Phase 43A.1: Composes vMMU, CFS, SpecEngine, ContextHub into a single runtime.
  * Wires cross-layer integration and provides unified submit/schedule/pressure API.
@@ -8,8 +8,8 @@
  * Header-only. Wraps external PagedKVCache + RequestScheduler.
  */
 
-#ifndef NEURALOS_L2_RUNTIME_HPP
-#define NEURALOS_L2_RUNTIME_HPP
+#ifndef NEURALOS_KERNEL_RUNTIME_HPP
+#define NEURALOS_KERNEL_RUNTIME_HPP
 
 #include "neuralOS/kernel/vMMU.hpp"
 #include "neuralOS/kernel/CFS.hpp"
@@ -22,7 +22,7 @@
 #include <memory>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 struct RuntimeConfig {
     vMMU::Config          vmmu_cfg;
@@ -158,6 +158,13 @@ private:
     Stats stats_{};
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_RUNTIME_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::RuntimeConfig;
+    using neuralOS::kernel::ScheduleResult;
+    using neuralOS::kernel::NeuralOSRuntime;
+}}
+
+#endif // NEURALOS_KERNEL_RUNTIME_HPP

@@ -1,6 +1,6 @@
 /**
  * @file SpecEngine.hpp
- * @brief NeuralOS L2 — Speculative Execution Engine (Tree Search)
+ * @brief NeuralOS kernel — Speculative Execution Engine (Tree Search)
  *
  * Phase 36.4: Multi-branch speculation tree replacing linear chain.
  *   - SpecTree: N-ary tree of speculated token sequences
@@ -12,8 +12,8 @@
  * Header-only. Operates on SpeculativeConfig from model_config.hpp.
  */
 
-#ifndef NEURALOS_L2_SPECENGINE_HPP
-#define NEURALOS_L2_SPECENGINE_HPP
+#ifndef NEURALOS_KERNEL_SPECENGINE_HPP
+#define NEURALOS_KERNEL_SPECENGINE_HPP
 
 #include "neuralOS/kernel/vMMU.hpp"
 #include "neuralOS/kernel/request_scheduler.hpp"
@@ -25,7 +25,7 @@
 #include <mutex>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  SpecNode — one node in the speculation tree                        */
@@ -147,12 +147,12 @@ public:
 
     /* ---- Cross-Layer Integration ---------------------------------- */
 
-    void set_vmmu(neuralOS::L2::vMMU* v, nf::PagedKVCache* kv) {
+    void set_vmmu(neuralOS::kernel::vMMU* v, nf::PagedKVCache* kv) {
         vmmu_ = v;
         kv_for_cleanup_ = kv;
     }
 
-    neuralOS::L2::vMMU* vmmu() const { return vmmu_; }
+    neuralOS::kernel::vMMU* vmmu() const { return vmmu_; }
     uint32_t freed_sequences() const { return freed_sequences_; }
 
     /* ---- Branch --------------------------------------------------- */
@@ -344,11 +344,19 @@ private:
     mutable std::mutex             mu_;
     std::vector<SpecCheckpoint>    checkpoints_;
 
-    neuralOS::L2::vMMU*            vmmu_ = nullptr;
+    neuralOS::kernel::vMMU*            vmmu_ = nullptr;
     nf::PagedKVCache*              kv_for_cleanup_ = nullptr;
     uint32_t                       freed_sequences_ = 0;
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_SPECENGINE_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::SpecNode;
+    using neuralOS::kernel::SpecTree;
+    using neuralOS::kernel::SpecCheckpoint;
+    using neuralOS::kernel::SpecEngine;
+}}
+
+#endif // NEURALOS_KERNEL_SPECENGINE_HPP

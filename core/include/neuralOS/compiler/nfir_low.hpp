@@ -1,15 +1,15 @@
 /**
  * @file nfir_low.hpp
- * @brief NeuralOS L1 — Low-Level NFIR (Tensor Instructions)
+ * @brief NeuralOS compiler — Low-Level NFIR (Tensor Instructions)
  *
  * Phase 37.1: Low-level IR mapping directly to nf_task_desc.
  *   - NfirLowOp: corresponds 1:1 with PipelineEngine tasks
  *   - NfirLowGraph: execution-ready DAG
- *   - lower(): High → Low IR transformation
+ *   - lower(): High -> Low IR transformation
  */
 
-#ifndef NEURALOS_L1_NFIR_LOW_HPP
-#define NEURALOS_L1_NFIR_LOW_HPP
+#ifndef NEURALOS_COMPILER_NFIR_LOW_HPP
+#define NEURALOS_COMPILER_NFIR_LOW_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -19,7 +19,7 @@
 #include <vector>
 #include <unordered_map>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  NfirLowOp — low-level tensor instruction                          */
@@ -157,6 +157,14 @@ inline NfirLowGraph lower(const NfirHighGraph& high) {
     return low;
 }
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_NFIR_LOW_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::NfirLowOp;
+    using neuralOS::compiler::NfirLowGraph;
+    using neuralOS::compiler::high_op_to_name;
+    using neuralOS::compiler::lower;
+}}
+
+#endif // NEURALOS_COMPILER_NFIR_LOW_HPP

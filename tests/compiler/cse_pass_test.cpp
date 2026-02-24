@@ -14,7 +14,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 int main() {
     printf("=== CSE Pass Test ===\n");

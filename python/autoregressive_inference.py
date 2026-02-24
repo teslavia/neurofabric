@@ -13,7 +13,7 @@ Example:
 import struct
 import sys
 
-from neurofabric import Engine, Session
+from neuralos import Engine, Session
 
 
 def main():

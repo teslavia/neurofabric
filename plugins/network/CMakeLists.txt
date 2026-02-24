@@ -1,8 +1,8 @@
 # ==================================================================
-# Neuro-Fabric — Network Proxy Execution Provider Plugin
+# NeuralOS — Network Proxy Execution Provider Plugin
 # ==================================================================
 # Implements nf_provider_vtable over TCP sockets.
-# Loaded at runtime via dlopen, never linked into nf_core.
+# Loaded at runtime via dlopen, never linked into neuralOS_core.
 # ==================================================================
 
 add_library(nf_plugin_network SHARED

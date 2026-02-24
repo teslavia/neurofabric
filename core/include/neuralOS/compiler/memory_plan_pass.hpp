@@ -1,6 +1,6 @@
 /**
  * @file memory_plan_pass.hpp
- * @brief NeuralOS L1 — Static Memory Planning Pass
+ * @brief NeuralOS compiler — Static Memory Planning Pass
  *
  * Phase 37.3: Analyzes tensor lifetimes and computes optimal allocation.
  *   - Liveness analysis on NfirLowGraph
@@ -8,8 +8,8 @@
  *   - Peak memory estimation
  */
 
-#ifndef NEURALOS_L1_MEMORY_PLAN_PASS_HPP
-#define NEURALOS_L1_MEMORY_PLAN_PASS_HPP
+#ifndef NEURALOS_COMPILER_MEMORY_PLAN_PASS_HPP
+#define NEURALOS_COMPILER_MEMORY_PLAN_PASS_HPP
 
 #include "neuralOS/compiler/nfir_low.hpp"
 
@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  MemoryPlan — output of the planning pass                           */
@@ -144,6 +144,14 @@ private:
     }
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_MEMORY_PLAN_PASS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::TensorAllocation;
+    using neuralOS::compiler::MemoryPlan;
+    using neuralOS::compiler::LiveInterval;
+    using neuralOS::compiler::MemoryPlanPass;
+}}
+
+#endif // NEURALOS_COMPILER_MEMORY_PLAN_PASS_HPP

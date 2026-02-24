@@ -35,12 +35,12 @@ int main() {
     seq.num_tokens = 3;
 
     /* Test 1: Migrate without migrator → returns false */
-    neuralOS::L2::CFS cfs(&sched, &kv);
+    neuralOS::kernel::CFS cfs(&sched, &kv);
     CHECK(!cfs.migrate_request(id1, "192.168.1.70:9999"),
           "migrate without migrator returns false");
 
     /* Test 2: Migrate with migrator → succeeds */
-    neuralOS::L5::KVMigrator migrator;
+    neuralOS::mesh::KVMigrator migrator;
     cfs.set_migrator(&migrator);
 
     CHECK(cfs.migrate_request(id1, "192.168.1.70:9999"),

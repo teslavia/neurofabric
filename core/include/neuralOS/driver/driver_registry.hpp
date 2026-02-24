@@ -1,13 +1,13 @@
 /**
  * @file driver_registry.hpp
- * @brief NeuralOS L4 — Unified Driver Capability Query
+ * @brief NeuralOS driver — Unified Driver Capability Query
  *
  * Phase 36.1: Provides a registry for querying provider capabilities
  * (max_concurrent, memory, flops, dtypes, async support, RDMA).
  */
 
-#ifndef NEURALOS_L4_DRIVER_REGISTRY_HPP
-#define NEURALOS_L4_DRIVER_REGISTRY_HPP
+#ifndef NEURALOS_DRIVER_DRIVER_REGISTRY_HPP
+#define NEURALOS_DRIVER_DRIVER_REGISTRY_HPP
 
 #include "neuralOS/ddi/neuro_fabric_abi.h"
 #include "neuralOS/ddi/neuro_buffer_abi.h"
@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace neuralOS { namespace L4 {
+namespace neuralOS { namespace driver {
 
 struct DriverCaps {
     std::string name;
@@ -62,6 +62,12 @@ private:
     std::vector<Entry> entries_;
 };
 
-}} // namespace neuralOS::L4
+}} // namespace neuralOS::driver
 
-#endif // NEURALOS_L4_DRIVER_REGISTRY_HPP
+// Backward compatibility
+namespace neuralOS { namespace L4 {
+    using neuralOS::driver::DriverCaps;
+    using neuralOS::driver::DriverRegistry;
+}}
+
+#endif // NEURALOS_DRIVER_DRIVER_REGISTRY_HPP

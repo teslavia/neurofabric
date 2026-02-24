@@ -17,7 +17,7 @@
 int main() {
     printf("=== Topology Routing Test ===\n");
 
-    neuralOS::L2::VirtualBus bus;
+    neuralOS::kernel::VirtualBus bus;
 
     /* Diamond topology: 0 → 1, 0 → 2, 1 → 3, 2 → 3 */
     bus.register_provider(0, "src", "10.0.0.1", 16ULL<<30, 1000000000ULL, true);

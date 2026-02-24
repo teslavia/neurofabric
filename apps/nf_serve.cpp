@@ -247,8 +247,8 @@ struct ServerState {
     /* Phase 43: NeuralOS runtime (nullptr when disabled) */
     std::unique_ptr<nf::PagedKVCache>                  nos_kv;
     std::unique_ptr<nf::RequestScheduler>              nos_sched;
-    std::unique_ptr<neuralOS::L2::NeuralOSRuntime>     nos_runtime;
-    std::unique_ptr<neuralOS::L2::BatchInferenceLoop>  nos_loop;
+    std::unique_ptr<neuralOS::kernel::NeuralOSRuntime>     nos_runtime;
+    std::unique_ptr<neuralOS::kernel::BatchInferenceLoop>  nos_loop;
 };
 
 static void handle_completions(int fd, const HttpRequest& req, ServerState& state, bool is_chat) {
@@ -542,9 +542,9 @@ int main(int argc, char** argv) {
                            model->n_kv_heads ? model->n_kv_heads : model->n_heads,
                            model->dim / model->n_heads);
         state.nos_sched = std::make_unique<nf::RequestScheduler>();
-        state.nos_runtime = std::make_unique<neuralOS::L2::NeuralOSRuntime>(
+        state.nos_runtime = std::make_unique<neuralOS::kernel::NeuralOSRuntime>(
             state.nos_kv.get(), state.nos_sched.get());
-        state.nos_loop = std::make_unique<neuralOS::L2::BatchInferenceLoop>(
+        state.nos_loop = std::make_unique<neuralOS::kernel::BatchInferenceLoop>(
             state.nos_runtime.get(), state.nos_kv.get(), state.nos_sched.get());
         std::fprintf(stderr, "[nf_serve] NeuralOS runtime enabled\n");
     }

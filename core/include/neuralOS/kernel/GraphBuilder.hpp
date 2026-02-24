@@ -5,8 +5,8 @@
  * INTERNAL TO CORE — never crosses a dynamic library boundary.
  */
 
-#ifndef NF_GRAPH_BUILDER_HPP
-#define NF_GRAPH_BUILDER_HPP
+#ifndef NEURALOS_KERNEL_GRAPH_BUILDER_HPP
+#define NEURALOS_KERNEL_GRAPH_BUILDER_HPP
 
 #include "neuralOS/ddi/neuro_ir_format.h"
 #include "neuralOS/kernel/PipelineEngine.hpp"
@@ -15,7 +15,7 @@
 #include <functional>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /** Callback for allocating activation buffers (provided by caller). */
 using ActivationAllocFn = std::function<nf_status(
@@ -61,6 +61,12 @@ private:
     LoadedGraph       loaded_;
 };
 
-} // namespace nf
+}} // neuralOS::kernel
 
-#endif // NF_GRAPH_BUILDER_HPP
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::ActivationAllocFn;
+    using neuralOS::kernel::GraphBuilder;
+}
+
+#endif // NEURALOS_KERNEL_GRAPH_BUILDER_HPP

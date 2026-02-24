@@ -1,13 +1,13 @@
 /**
  * @file dce_pass.hpp
- * @brief NeuralOS L1 — Dead Code Elimination Pass
+ * @brief NeuralOS compiler — Dead Code Elimination Pass
  *
  * Phase 42B.1: Removes ops whose outputs are never consumed.
  * Algorithm: mark all ops reachable from graph outputs, remove unmarked.
  */
 
-#ifndef NEURALOS_L1_DCE_PASS_HPP
-#define NEURALOS_L1_DCE_PASS_HPP
+#ifndef NEURALOS_COMPILER_DCE_PASS_HPP
+#define NEURALOS_COMPILER_DCE_PASS_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -16,7 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 class DCEPass {
 public:
@@ -118,6 +118,11 @@ public:
     }
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_DCE_PASS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::DCEPass;
+}}
+
+#endif // NEURALOS_COMPILER_DCE_PASS_HPP

@@ -18,12 +18,12 @@
 int main() {
     printf("=== CXL Memory Test ===\n");
 
-    neuralOS::L5::CxlMemoryPool::Config cfg;
+    neuralOS::mesh::CxlMemoryPool::Config cfg;
     cfg.pool_size_bytes = 1024 * 1024;  /* 1 MB for testing */
     cfg.simulated_latency_ns = 0;       /* disable latency for speed */
     cfg.shared = false;
 
-    neuralOS::L5::CxlMemoryPool pool(cfg);
+    neuralOS::mesh::CxlMemoryPool pool(cfg);
 
     /* Test 1: Alloc */
     uint64_t a1 = pool.cxl_alloc(4096);
@@ -70,16 +70,16 @@ int main() {
     CHECK(big == 0, "OOM returns 0");
 
     /* Test 8: Shared pool */
-    neuralOS::L5::CxlMemoryPool::Config shared_cfg;
+    neuralOS::mesh::CxlMemoryPool::Config shared_cfg;
     shared_cfg.pool_size_bytes = 4096;
     shared_cfg.simulated_latency_ns = 0;
     shared_cfg.shared = true;
-    neuralOS::L5::CxlMemoryPool shared_pool(shared_cfg);
+    neuralOS::mesh::CxlMemoryPool shared_pool(shared_cfg);
     CHECK(shared_pool.is_shared(), "shared pool");
 
     /* Test 9: Domain constants */
-    CHECK(neuralOS::L5::NF_MEM_DOMAIN_CXL == 6, "CXL domain == 6");
-    CHECK(neuralOS::L5::NF_MEM_DOMAIN_CXL_SHARED == 7, "CXL_SHARED domain == 7");
+    CHECK(neuralOS::mesh::NF_MEM_DOMAIN_CXL == 6, "CXL domain == 6");
+    CHECK(neuralOS::mesh::NF_MEM_DOMAIN_CXL_SHARED == 7, "CXL_SHARED domain == 7");
 
     printf("PASS: all CXL memory tests passed\n");
     return 0;

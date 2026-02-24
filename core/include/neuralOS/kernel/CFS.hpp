@@ -1,6 +1,6 @@
 /**
  * @file CFS.hpp
- * @brief NeuralOS L2 — Completely Fair Scheduler for LLM Inference
+ * @brief NeuralOS kernel — Completely Fair Scheduler for LLM Inference
  *
  * Phase 36.3: VTC-based fair scheduling with preemption support.
  *   - VirtualTokenCounter tracks per-sequence virtual runtime
@@ -12,8 +12,8 @@
  * Header-only. Operates on RequestScheduler + PagedKVCache from model_config.hpp.
  */
 
-#ifndef NEURALOS_L2_CFS_HPP
-#define NEURALOS_L2_CFS_HPP
+#ifndef NEURALOS_KERNEL_CFS_HPP
+#define NEURALOS_KERNEL_CFS_HPP
 
 #include "neuralOS/kernel/vMMU.hpp"
 #include "neuralOS/kernel/kv_cache.hpp"
@@ -26,7 +26,7 @@
 #include <mutex>
 #include <vector>
 
-namespace neuralOS { namespace L2 {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  VirtualTokenCounter — per-request fairness tracking                */
@@ -72,7 +72,7 @@ public:
     /* ---- Cross-Layer Integration ---------------------------------- */
 
     void set_vmmu(vMMU* v) { vmmu_ = v; }
-    void set_migrator(neuralOS::L5::KVMigrator* m) { migrator_ = m; }
+    void set_migrator(neuralOS::mesh::KVMigrator* m) { migrator_ = m; }
 
     vMMU* vmmu() const { return vmmu_; }
     uint32_t page_out_count() const { return page_out_count_; }
@@ -298,17 +298,23 @@ private:
     mutable std::mutex     mu_;
 
     vMMU*                            vmmu_ = nullptr;
-    neuralOS::L5::KVMigrator*        migrator_ = nullptr;
+    neuralOS::mesh::KVMigrator*        migrator_ = nullptr;
     uint32_t                         page_out_count_ = 0;
     uint32_t                         page_in_count_ = 0;
     uint32_t                         migrations_ = 0;
     std::string                      last_migration_target_;
-    neuralOS::L5::KVSerializedSequence last_migration_;
+    neuralOS::mesh::KVSerializedSequence last_migration_;
 
     std::vector<VirtualTokenCounter> vtcs_;
     std::vector<uint32_t>            preempted_ids_;
 };
 
-}} // namespace neuralOS::L2
+}} // namespace neuralOS::kernel
 
-#endif // NEURALOS_L2_CFS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L2 {
+    using neuralOS::kernel::VirtualTokenCounter;
+    using neuralOS::kernel::CFS;
+}}
+
+#endif // NEURALOS_KERNEL_CFS_HPP

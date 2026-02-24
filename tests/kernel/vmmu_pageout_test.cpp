@@ -26,7 +26,7 @@ int main() {
     nf::PagedKVCache kv;
     kv.init(NUM_BLOCKS, BLOCK_SIZE, 2, 4, 64);
 
-    neuralOS::L2::vMMU vmmu(&kv, nullptr);
+    neuralOS::kernel::vMMU vmmu(&kv, nullptr);
 
     /* Allocate sequence with 12 tokens (3 blocks) */
     uint32_t seq = kv.alloc_sequence();
@@ -79,9 +79,9 @@ int main() {
     bool pressure_fired = false;
 
     /* Use a very low threshold so current usage triggers it */
-    neuralOS::L2::vMMU::Config pcfg;
+    neuralOS::kernel::vMMU::Config pcfg;
     pcfg.pressure_threshold = 0.01f;  /* 1% — any usage triggers */
-    neuralOS::L2::vMMU vmmu2(&kv, nullptr, pcfg);
+    neuralOS::kernel::vMMU vmmu2(&kv, nullptr, pcfg);
     vmmu2.set_pressure_callback([&](uint64_t used, uint64_t total) {
         pressure_fired = true;
     });

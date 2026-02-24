@@ -14,7 +14,7 @@
     } \
 } while(0)
 
-using namespace neuralOS::L1;
+using namespace neuralOS::compiler;
 
 /* Helper: build a graph with dead ops, duplicates, fusible chain */
 static NfirHighGraph build_test_graph() {

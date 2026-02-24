@@ -1,13 +1,13 @@
 /**
  * @file cse_pass.hpp
- * @brief NeuralOS L1 — Common Subexpression Elimination Pass
+ * @brief NeuralOS compiler — Common Subexpression Elimination Pass
  *
  * Phase 42B.2: Merges ops with identical (kind, input_ids, attrs).
  * Hash each op signature, detect collisions, redirect consumers.
  */
 
-#ifndef NEURALOS_L1_CSE_PASS_HPP
-#define NEURALOS_L1_CSE_PASS_HPP
+#ifndef NEURALOS_COMPILER_CSE_PASS_HPP
+#define NEURALOS_COMPILER_CSE_PASS_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -18,7 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 class CSEPass {
 public:
@@ -122,6 +122,11 @@ private:
     }
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_CSE_PASS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::CSEPass;
+}}
+
+#endif // NEURALOS_COMPILER_CSE_PASS_HPP

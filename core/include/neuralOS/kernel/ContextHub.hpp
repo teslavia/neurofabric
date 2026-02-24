@@ -13,8 +13,8 @@
  * Memory: budget-enforced; hub holds TensorView shared refs (refcounted).
  */
 
-#ifndef NF_CONTEXT_HUB_HPP
-#define NF_CONTEXT_HUB_HPP
+#ifndef NEURALOS_KERNEL_CONTEXT_HUB_HPP
+#define NEURALOS_KERNEL_CONTEXT_HUB_HPP
 
 #include "neuralOS/kernel/TensorView.hpp"
 #include "neuralOS/ddi/neuro_scheduler_abi.h"
@@ -30,7 +30,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  ContextEntry — one cached tensor with metadata                     */
@@ -466,6 +466,13 @@ private:
     mutable std::shared_mutex       mu_;
 };
 
-} // namespace nf
+}} // neuralOS::kernel
 
-#endif // NF_CONTEXT_HUB_HPP
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::ContextEntry;
+    using neuralOS::kernel::RadixNode;
+    using neuralOS::kernel::ContextHub;
+}
+
+#endif // NEURALOS_KERNEL_CONTEXT_HUB_HPP

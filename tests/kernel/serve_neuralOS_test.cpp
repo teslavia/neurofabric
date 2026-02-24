@@ -22,8 +22,8 @@ int main() {
     nf::RequestScheduler sched;
 
     /* Simulate ServerState with NeuralOSRuntime */
-    neuralOS::L2::NeuralOSRuntime runtime(&kv, &sched);
-    neuralOS::L2::BatchInferenceLoop loop(&runtime, &kv, &sched);
+    neuralOS::kernel::NeuralOSRuntime runtime(&kv, &sched);
+    neuralOS::kernel::BatchInferenceLoop loop(&runtime, &kv, &sched);
 
     /* Submit 2 concurrent requests (like HTTP server) */
     nf::InferenceRequest req1;

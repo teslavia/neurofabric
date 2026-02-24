@@ -1,20 +1,20 @@
 /**
  * @file shape_inference_pass.hpp
- * @brief NeuralOS L1 — Shape Inference Pass
+ * @brief NeuralOS compiler — Shape Inference Pass
  *
  * Phase 42B.4: Propagates shapes through ops in NfirHighGraph.
  * Rules per HighOpKind for MATMUL, element-wise, norms, attention.
  */
 
-#ifndef NEURALOS_L1_SHAPE_INFERENCE_PASS_HPP
-#define NEURALOS_L1_SHAPE_INFERENCE_PASS_HPP
+#ifndef NEURALOS_COMPILER_SHAPE_INFERENCE_PASS_HPP
+#define NEURALOS_COMPILER_SHAPE_INFERENCE_PASS_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
 #include <algorithm>
 #include <cstdint>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 class ShapeInferencePass {
 public:
@@ -127,6 +127,11 @@ private:
     }
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_SHAPE_INFERENCE_PASS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::ShapeInferencePass;
+}}
+
+#endif // NEURALOS_COMPILER_SHAPE_INFERENCE_PASS_HPP

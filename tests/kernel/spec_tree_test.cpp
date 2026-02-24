@@ -22,7 +22,7 @@ int main() {
     cfg.max_depth = 4;
     cfg.num_speculative = 4;
 
-    neuralOS::L2::SpecEngine engine(cfg);
+    neuralOS::kernel::SpecEngine engine(cfg);
     auto& tree = engine.tree();
 
     /* Test 1: Tree starts with root */
@@ -58,12 +58,12 @@ int main() {
     CHECK(wide.empty(), "root already has 3 children, width=3 blocks more");
 
     /* Test 7: Path to node */
-    auto path = neuralOS::L2::SpecTree::path_to(deep3[0]);
+    auto path = neuralOS::kernel::SpecTree::path_to(deep3[0]);
     CHECK(path.size() == 3, "path length 3");
     CHECK(path[0] == 10 && path[1] == 11 && path[2] == 111, "correct path");
 
     /* Test 8: Collect leaves */
-    std::vector<neuralOS::L2::SpecNode*> all_leaves;
+    std::vector<neuralOS::kernel::SpecNode*> all_leaves;
     tree.collect_leaves(tree.root.get(), all_leaves);
     CHECK(all_leaves.size() > 0, "has leaves");
 

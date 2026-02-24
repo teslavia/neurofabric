@@ -50,7 +50,7 @@ int main() {
         sched.requests[i].seq_id = kv.alloc_sequence();
     }
 
-    neuralOS::L2::CFS cfs(&sched, &kv);
+    neuralOS::kernel::CFS cfs(&sched, &kv);
 
     /* Account tokens: r1 processes 10, r2 processes 10, r3 processes 10 */
     cfs.account_tokens(id1, 10, false);

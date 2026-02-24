@@ -1,5 +1,5 @@
 # ==================================================================
-# Neuro-Fabric — Application Layer (Layer 1)
+# NeuralOS — Application Layer
 # ==================================================================
 
 # ---- nf_node_cli: universal coordinator/worker/local executor ----
@@ -13,7 +13,7 @@ target_include_directories(nf_node_cli PRIVATE
     ${CMAKE_SOURCE_DIR}/core/src          # graph/mmap_buffer.h (internal)
 )
 
-target_link_libraries(nf_node_cli PRIVATE nf_core)
+target_link_libraries(nf_node_cli PRIVATE neuralOS_core)
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(nf_node_cli PRIVATE dl pthread)
@@ -42,7 +42,7 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/src
     )
-    target_link_libraries(nf_generate PRIVATE nf_core nf_plugin_metal nf_model_headers)
+    target_link_libraries(nf_generate PRIVATE neuralOS_core nf_plugin_metal neuralOS_model)
 
     # ---- nf_serve: OpenAI-compatible HTTP server ----
     add_executable(nf_serve
@@ -53,5 +53,5 @@ if(NF_PLUGIN_METAL)
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/src
     )
-    target_link_libraries(nf_serve PRIVATE nf_core nf_plugin_metal nf_model_headers)
+    target_link_libraries(nf_serve PRIVATE neuralOS_core nf_plugin_metal neuralOS_model)
 endif()

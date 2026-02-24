@@ -8,15 +8,15 @@
  * Header-only. No external dependencies beyond STL.
  */
 
-#ifndef NEURALOS_L2_KV_CACHE_HPP
-#define NEURALOS_L2_KV_CACHE_HPP
+#ifndef NEURALOS_KERNEL_KV_CACHE_HPP
+#define NEURALOS_KERNEL_KV_CACHE_HPP
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-namespace nf {
+namespace neuralOS { namespace kernel {
 
 /* ================================================================== */
 /*  Constants                                                          */
@@ -261,6 +261,17 @@ struct PagedKVCache {
     }
 };
 
-} /* namespace nf */
+}} // neuralOS::kernel
 
-#endif /* NEURALOS_L2_KV_CACHE_HPP */
+// Backward compatibility
+namespace nf {
+    using neuralOS::kernel::NF_PAGED_MAX_SEQUENCES;
+    using neuralOS::kernel::NF_PAGED_MAX_BLOCKS_PER_SEQ;
+    using neuralOS::kernel::NF_PAGED_INVALID_BLOCK;
+    using neuralOS::kernel::PagedKVBlock;
+    using neuralOS::kernel::BlockAllocator;
+    using neuralOS::kernel::SequenceKV;
+    using neuralOS::kernel::PagedKVCache;
+}
+
+#endif /* NEURALOS_KERNEL_KV_CACHE_HPP */

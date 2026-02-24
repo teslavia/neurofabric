@@ -1,17 +1,17 @@
 /**
  * @file fusion_pass.hpp
- * @brief NeuralOS L1 — Operator Fusion Pass
+ * @brief NeuralOS compiler — Operator Fusion Pass
  *
  * Phase 37.2: Pattern-matching fusion on NfirHighGraph.
- *   - dequant + matmul → fused_dq_matmul
- *   - rms_norm + rope → fused_norm_rope
- *   - silu + element_mul → fused_swiglu
- *   - attention_q + attention_k + attention_v → fused_qkv_proj
+ *   - dequant + matmul -> fused_dq_matmul
+ *   - rms_norm + rope -> fused_norm_rope
+ *   - silu + element_mul -> fused_swiglu
+ *   - attention_q + attention_k + attention_v -> fused_qkv_proj
  * Phase 42B.3: Chain fusion (multi-op greedy longest match).
  */
 
-#ifndef NEURALOS_L1_FUSION_PASS_HPP
-#define NEURALOS_L1_FUSION_PASS_HPP
+#ifndef NEURALOS_COMPILER_FUSION_PASS_HPP
+#define NEURALOS_COMPILER_FUSION_PASS_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -20,7 +20,7 @@
 #include <vector>
 #include <unordered_set>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  FusionPattern — describes a fusible op pair                        */
@@ -186,6 +186,13 @@ private:
     std::vector<ChainPattern>  chain_patterns_;
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_FUSION_PASS_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::FusionPattern;
+    using neuralOS::compiler::ChainPattern;
+    using neuralOS::compiler::FusionPass;
+}}
+
+#endif // NEURALOS_COMPILER_FUSION_PASS_HPP

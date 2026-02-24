@@ -216,14 +216,14 @@ int main(int argc, char** argv) {
     /* Phase 44: NeuralOS runtime (auto with --paged, opt-out with --no-neuralOS) */
     std::unique_ptr<nf::PagedKVCache> nos_kv;
     std::unique_ptr<nf::RequestScheduler> nos_sched;
-    std::unique_ptr<neuralOS::L2::NeuralOSRuntime> nos_runtime;
+    std::unique_ptr<neuralOS::kernel::NeuralOSRuntime> nos_runtime;
     if (use_neuralOS) {
         nos_kv = std::make_unique<nf::PagedKVCache>();
         nos_kv->init(256, 16, model->n_layers,
                      model->n_kv_heads ? model->n_kv_heads : model->n_heads,
                      model->dim / model->n_heads);
         nos_sched = std::make_unique<nf::RequestScheduler>();
-        nos_runtime = std::make_unique<neuralOS::L2::NeuralOSRuntime>(
+        nos_runtime = std::make_unique<neuralOS::kernel::NeuralOSRuntime>(
             nos_kv.get(), nos_sched.get());
 
         nf::InferenceRequest ir;
@@ -332,7 +332,7 @@ int main(int argc, char** argv) {
     {
         auto sg_ir = nf::build_llama_step_graph(*ctx, 1);
 
-        std::vector<neuralOS::L1::DagNodeInfo> dag_nodes;
+        std::vector<neuralOS::compiler::DagNodeInfo> dag_nodes;
         dag_nodes.push_back({sg_ir.embed_id, "embedding_lookup", 1, 1});
         for (auto& lid : sg_ir.layer_ids) {
             dag_nodes.push_back({lid.attn_norm,  "rms_norm",         1, 1});
@@ -355,13 +355,13 @@ int main(int argc, char** argv) {
         dag_nodes.push_back({sg_ir.final_norm_id, "rms_norm", 1, 1});
         dag_nodes.push_back({sg_ir.lm_head_id,    "linear",   2, 1});
 
-        auto ir_graph = neuralOS::L1::lift_nodes_to_nfir(
+        auto ir_graph = neuralOS::compiler::lift_nodes_to_nfir(
             dag_nodes.data(), static_cast<uint32_t>(dag_nodes.size()));
 
-        neuralOS::L1::CompilerPipeline compiler;
+        neuralOS::compiler::CompilerPipeline compiler;
         auto cr = compiler.run(&ir_graph);
 
-        auto ann = neuralOS::L1::annotate_from_nfir(ir_graph);
+        auto ann = neuralOS::compiler::annotate_from_nfir(ir_graph);
 
         std::fprintf(stderr, "[nf_generate] Compiler: ops=%u removed=%u merged=%u "
                      "shapes=%u fusions=%u annotated=%zu\n",

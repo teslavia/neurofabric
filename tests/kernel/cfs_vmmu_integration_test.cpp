@@ -21,7 +21,7 @@ int main() {
     kv.init(64, 4, 2, 4, 64);
 
     nf::ContextHub hub(1024 * 1024, NF_EVICT_LRU);
-    neuralOS::L2::vMMU vmmu(&kv, &hub);
+    neuralOS::kernel::vMMU vmmu(&kv, &hub);
 
     nf::RequestScheduler sched;
 
@@ -41,7 +41,7 @@ int main() {
     uint32_t used_before = kv.allocator.num_used();
 
     /* Test 1: CFS with vMMU — preempt triggers page_out */
-    neuralOS::L2::CFS cfs(&sched, &kv);
+    neuralOS::kernel::CFS cfs(&sched, &kv);
     cfs.set_vmmu(&vmmu);
 
     CHECK(cfs.preempt(id1), "preempt with vMMU succeeded");
@@ -55,7 +55,7 @@ int main() {
     CHECK(cfs.page_in_count() > 0, "page_in was called");
 
     /* Test 3: CFS without vMMU — backward compat, no crash */
-    neuralOS::L2::CFS cfs2(&sched, &kv);
+    neuralOS::kernel::CFS cfs2(&sched, &kv);
     sched.requests[0].state = nf::RequestState::DECODE;
     CHECK(cfs2.preempt(id1), "preempt without vMMU succeeded");
     CHECK(cfs2.page_out_count() == 0, "no page_out without vMMU");

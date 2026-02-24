@@ -1,11 +1,11 @@
 # ==================================================================
-# Neuro-Fabric — Top-Level CMake Configuration
+# NeuralOS — Top-Level CMake Configuration
 # ==================================================================
 # Minimum 3.21: PROJECT_IS_TOP_LEVEL, improved presets support.
 cmake_minimum_required(VERSION 3.21)
 
-project(neurofabric
-    VERSION   0.2.1
+project(neuralOS
+    VERSION   0.2.3
     LANGUAGES C CXX
 )
 

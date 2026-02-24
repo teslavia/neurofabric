@@ -1,6 +1,6 @@
 /**
  * @file nfir_high.hpp
- * @brief NeuralOS L1 — High-Level NFIR (Semantic Compute Graph)
+ * @brief NeuralOS compiler — High-Level NFIR (Semantic Compute Graph)
  *
  * Phase 37.1: High-level IR preserving semantic information.
  *   - NfirHighOp: matmul, attention, ffn_block, moe_block, etc.
@@ -8,8 +8,8 @@
  *   - FusionCandidate: marks fusible op pairs
  */
 
-#ifndef NEURALOS_L1_NFIR_HIGH_HPP
-#define NEURALOS_L1_NFIR_HIGH_HPP
+#ifndef NEURALOS_COMPILER_NFIR_HIGH_HPP
+#define NEURALOS_COMPILER_NFIR_HIGH_HPP
 
 #include <cstdint>
 #include <string>
@@ -17,7 +17,7 @@
 #include <memory>
 #include <unordered_map>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  NfirHighOp — high-level semantic operator                          */
@@ -120,6 +120,15 @@ struct NfirHighGraph {
     uint32_t num_tensors() const { return static_cast<uint32_t>(tensors.size()); }
 };
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_NFIR_HIGH_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::HighOpKind;
+    using neuralOS::compiler::NfirTensorRef;
+    using neuralOS::compiler::NfirHighOp;
+    using neuralOS::compiler::FusionCandidate;
+    using neuralOS::compiler::NfirHighGraph;
+}}
+
+#endif // NEURALOS_COMPILER_NFIR_HIGH_HPP

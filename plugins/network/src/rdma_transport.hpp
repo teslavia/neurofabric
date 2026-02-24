@@ -7,8 +7,8 @@
  * Phase 45D: Real POSIX socket TCP transport.
  */
 
-#ifndef NEURALOS_RDMA_TRANSPORT_HPP
-#define NEURALOS_RDMA_TRANSPORT_HPP
+#ifndef NEURALOS_MESH_RDMA_TRANSPORT_HPP
+#define NEURALOS_MESH_RDMA_TRANSPORT_HPP
 
 #include <cstdint>
 #include <cstring>
@@ -20,7 +20,7 @@
 #include <unistd.h>
 #include <memory>
 
-namespace neuralOS { namespace transport {
+namespace neuralOS { namespace mesh { namespace transport {
 
 /* ================================================================== */
 /*  TransportOps — unified transport interface                         */
@@ -166,6 +166,19 @@ inline TransportOps select_transport(const char* scheme) {
     return make_tcp_transport();
 }
 
+}}} // namespace neuralOS::mesh::transport
+
+/* ================================================================== */
+/*  Backward-compat alias: neuralOS::transport → neuralOS::mesh::transport */
+/* ================================================================== */
+namespace neuralOS { namespace transport {
+    using neuralOS::mesh::transport::TransportKind;
+    using neuralOS::mesh::transport::TransportOps;
+    using neuralOS::mesh::transport::make_tcp_transport;
+#ifdef NF_HAS_RDMA
+    using neuralOS::mesh::transport::make_rdma_transport;
+#endif
+    using neuralOS::mesh::transport::select_transport;
 }} // namespace neuralOS::transport
 
-#endif // NEURALOS_RDMA_TRANSPORT_HPP
+#endif // NEURALOS_MESH_RDMA_TRANSPORT_HPP

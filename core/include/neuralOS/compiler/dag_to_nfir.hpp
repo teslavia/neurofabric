@@ -1,6 +1,6 @@
 /**
  * @file dag_to_nfir.hpp
- * @brief NeuralOS L1 — DAG → NFIR Lifting (StepGraph → NfirHighGraph)
+ * @brief NeuralOS compiler — DAG -> NFIR Lifting (StepGraph -> NfirHighGraph)
  *
  * Phase 45B: Bridges the real inference path through the NFIR compiler.
  * Converts a PipelineEngine StepGraph into a NfirHighGraph so that
@@ -9,8 +9,8 @@
  * Header-only. Depends on nfir_high.hpp + PipelineEngine.hpp.
  */
 
-#ifndef NEURALOS_L1_DAG_TO_NFIR_HPP
-#define NEURALOS_L1_DAG_TO_NFIR_HPP
+#ifndef NEURALOS_COMPILER_DAG_TO_NFIR_HPP
+#define NEURALOS_COMPILER_DAG_TO_NFIR_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -19,7 +19,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  Op name → HighOpKind mapping                                       */
@@ -129,6 +129,14 @@ inline NfirHighGraph lift_step_graph(const uint32_t* node_ids,
     return lift_nodes_to_nfir(infos.data(), count);
 }
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_DAG_TO_NFIR_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::map_op_name;
+    using neuralOS::compiler::DagNodeInfo;
+    using neuralOS::compiler::lift_nodes_to_nfir;
+    using neuralOS::compiler::lift_step_graph;
+}}
+
+#endif // NEURALOS_COMPILER_DAG_TO_NFIR_HPP

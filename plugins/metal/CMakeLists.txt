@@ -1,8 +1,8 @@
 # ==================================================================
-# Neuro-Fabric — Apple Metal Execution Provider Plugin
+# NeuralOS — Apple Metal Execution Provider Plugin
 # ==================================================================
 # Phase 9: Real GPU compute via Objective-C++ (.mm).
-# Links Metal + Foundation frameworks. NEVER linked into nf_core.
+# Links Metal + Foundation frameworks. NEVER linked into neuralOS_core.
 # ==================================================================
 
 add_library(nf_plugin_metal SHARED

@@ -1,6 +1,6 @@
 /**
  * @file nfir_annotate.hpp
- * @brief NeuralOS L1 — NFIR → DAG Annotation (feedback compiler results)
+ * @brief NeuralOS compiler — NFIR -> DAG Annotation (feedback compiler results)
  *
  * Phase 45B: After CompilerPipeline optimizes the NfirHighGraph,
  * annotate_dag_from_nfir() feeds results back to the DAG:
@@ -11,8 +11,8 @@
  * Header-only.
  */
 
-#ifndef NEURALOS_L1_NFIR_ANNOTATE_HPP
-#define NEURALOS_L1_NFIR_ANNOTATE_HPP
+#ifndef NEURALOS_COMPILER_NFIR_ANNOTATE_HPP
+#define NEURALOS_COMPILER_NFIR_ANNOTATE_HPP
 
 #include "neuralOS/compiler/nfir_high.hpp"
 
@@ -21,7 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace neuralOS { namespace L1 {
+namespace neuralOS { namespace compiler {
 
 /* ================================================================== */
 /*  DagAnnotation — per-node optimization hints                        */
@@ -106,6 +106,13 @@ inline AnnotationResult annotate_from_nfir(const NfirHighGraph& graph) {
     return result;
 }
 
-}} // namespace neuralOS::L1
+}} // namespace neuralOS::compiler
 
-#endif // NEURALOS_L1_NFIR_ANNOTATE_HPP
+// Backward compatibility
+namespace neuralOS { namespace L1 {
+    using neuralOS::compiler::DagAnnotation;
+    using neuralOS::compiler::AnnotationResult;
+    using neuralOS::compiler::annotate_from_nfir;
+}}
+
+#endif // NEURALOS_COMPILER_NFIR_ANNOTATE_HPP
