@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(neurofabric
-    VERSION   0.1.1
+    VERSION   0.2.1
     LANGUAGES C CXX
 )
 
@@ -47,7 +47,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Options
 # ------------------------------------------------------------------
 option(NF_BUILD_TESTS    "Build unit tests"          ON)
-option(NF_BUILD_EXAMPLES "Build example programs"     ON)
+option(NF_BUILD_EXAMPLES "Build example programs"     OFF)  # examples/ removed in Phase 40
 option(NF_PLUGIN_METAL   "Build Apple Metal plugin"   OFF)
 option(NF_PLUGIN_RKNN    "Build Rockchip RKNN plugin" OFF)
 option(NF_PLUGIN_NETWORK "Build Network Proxy plugin"  ON)
@@ -104,9 +104,7 @@ if(NF_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-if(NF_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
+# examples/ removed in Phase 40 — was empty placeholder
 
 option(NF_BUILD_TOOLS "Build CLI tools" ON)
 if(NF_BUILD_TOOLS)

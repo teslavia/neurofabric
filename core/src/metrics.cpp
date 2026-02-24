@@ -3,7 +3,7 @@
  * @brief Phase 34-G: Metrics collector + structured logging implementation
  */
 
-#include "neurofabric/abi/metrics.h"
+#include "neuralOS/ddi/metrics.h"
 
 #include <atomic>
 #include <cstdarg>

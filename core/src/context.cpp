@@ -8,7 +8,7 @@
  *   - Context Hub for multi-agent state sharing
  */
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
 
 namespace nf {
 

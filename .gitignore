@@ -23,6 +23,7 @@ cmake-build-*/
 .claude/
 CLAUDE.md
 .claudeignore
+AGENTS.md
 
 MEMORY.md
 model/nf_compiler/__pycache__/

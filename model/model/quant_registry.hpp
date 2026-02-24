@@ -12,7 +12,7 @@
 #define NF_QUANT_REGISTRY_HPP
 
 #include "gguf_loader.hpp"
-#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
 
 namespace nf {
 

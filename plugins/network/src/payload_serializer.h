@@ -18,8 +18,8 @@
 #ifndef NF_PAYLOAD_SERIALIZER_H
 #define NF_PAYLOAD_SERIALIZER_H
 
-#include "neurofabric/abi/neuro_network_protocol.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
+#include "neuralOS/ddi/neuro_network_protocol.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
 
 #ifdef __cplusplus
 extern "C" {

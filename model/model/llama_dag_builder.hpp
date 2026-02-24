@@ -21,10 +21,10 @@
 #include "arch_registry.hpp"
 #include "kv_cache_policy.hpp"
 #include "model_config.hpp"
-#include "neurofabric/abi/neuro_fabric_abi.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
-#include "neurofabric/abi/neuro_scheduler_abi.h"
-#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
+#include "neuralOS/ddi/neuro_scheduler_abi.h"
+#include "neuralOS/kernel/PipelineEngine.hpp"
 
 #include <cassert>
 #include <cstdio>

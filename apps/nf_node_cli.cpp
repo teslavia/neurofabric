@@ -11,14 +11,14 @@
  * Coordinator/worker modes reuse the Phase 11 wire protocol (nf_frame_header + nf_tensor_wire).
  */
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
-#include "neurofabric/abi/neuro_scheduler_abi.h"
-#include "neurofabric/abi/neuro_network_protocol.h"
-#include "neurofabric/abi/neuro_ir_format.h"
-#include "neurofabric/engine/PipelineEngine.hpp"
-#include "neurofabric/engine/GraphBuilder.hpp"
-#include "neurofabric/engine/ContextHub.hpp"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
+#include "neuralOS/ddi/neuro_scheduler_abi.h"
+#include "neuralOS/ddi/neuro_network_protocol.h"
+#include "neuralOS/ddi/neuro_ir_format.h"
+#include "neuralOS/kernel/PipelineEngine.hpp"
+#include "neuralOS/kernel/GraphBuilder.hpp"
+#include "neuralOS/kernel/ContextHub.hpp"
 
 #include <atomic>
 #include <cassert>

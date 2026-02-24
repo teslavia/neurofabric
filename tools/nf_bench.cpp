@@ -5,10 +5,10 @@
  * Usage: nf_bench [--iterations N] [--warmup N]
  */
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
-#include "neurofabric/abi/neuro_scheduler_abi.h"
-#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
+#include "neuralOS/ddi/neuro_scheduler_abi.h"
+#include "neuralOS/kernel/PipelineEngine.hpp"
 
 #include <chrono>
 #include <cstdio>

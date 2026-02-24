@@ -8,7 +8,7 @@
  *   - Operator fusion annotation points (IR passthrough hooks)
  */
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
 
 namespace nf {
 

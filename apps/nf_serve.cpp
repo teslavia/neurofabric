@@ -11,16 +11,20 @@
  *   GET  /metrics              — Prometheus metrics
  */
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
-#include "neurofabric/engine/PipelineEngine.hpp"
-#include "neurofabric/abi/metrics.h"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
+#include "neuralOS/kernel/PipelineEngine.hpp"
+#include "neuralOS/ddi/metrics.h"
 #include "model/gguf_loader.hpp"
 #include "model/llama_dag_builder.hpp"
 #include "model/arch_registry.hpp"
 #include "model/sampler.hpp"
 #include "model/tokenizer.hpp"
 #include "model/chat_template.hpp"
+
+/* Phase 43: NeuralOS runtime (optional) */
+#include "neuralOS/kernel/NeuralOSRuntime.hpp"
+#include "neuralOS/kernel/BatchInferenceLoop.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -237,7 +241,14 @@ struct ServerState {
     const char* arch = nullptr;
     bool use_fp16 = false;
     bool use_paged = false;
+    bool use_neuralOS = false;
     std::mutex infer_mu;  /* serialize inference for now */
+
+    /* Phase 43: NeuralOS runtime (nullptr when disabled) */
+    std::unique_ptr<nf::PagedKVCache>                  nos_kv;
+    std::unique_ptr<nf::RequestScheduler>              nos_sched;
+    std::unique_ptr<neuralOS::L2::NeuralOSRuntime>     nos_runtime;
+    std::unique_ptr<neuralOS::L2::BatchInferenceLoop>  nos_loop;
 };
 
 static void handle_completions(int fd, const HttpRequest& req, ServerState& state, bool is_chat) {
@@ -400,7 +411,24 @@ static void handle_client(int fd, ServerState& state) {
     } else if (req.method == "GET" && req.path == "/metrics") {
         char buf[4096];
         size_t n = nf_metrics_to_prometheus(buf, sizeof(buf));
-        send_response(fd, 200, "text/plain", std::string(buf, n));
+        std::string metrics(buf, n);
+        /* Phase 43: Append NeuralOS runtime stats if available */
+        if (state.nos_runtime) {
+            auto& st = state.nos_runtime->stats();
+            char nos_buf[512];
+            int nos_n = snprintf(nos_buf, sizeof(nos_buf),
+                "nf_neuralOS_submitted %llu\n"
+                "nf_neuralOS_completed %llu\n"
+                "nf_neuralOS_preempted %llu\n"
+                "nf_neuralOS_pages_out %u\n"
+                "nf_neuralOS_prefix_hits %u\n",
+                (unsigned long long)st.total_submitted,
+                (unsigned long long)st.total_completed,
+                (unsigned long long)st.total_preempted,
+                st.pages_out, st.prefix_hits);
+            metrics.append(nos_buf, nos_n);
+        }
+        send_response(fd, 200, "text/plain", metrics);
     } else if (req.method == "POST" && req.path == "/v1/chat/completions") {
         handle_completions(fd, req, state, true);
     } else if (req.method == "POST" && req.path == "/v1/completions") {
@@ -420,7 +448,8 @@ static void usage(const char* prog) {
         "  --threads N  (default: 4)\n"
         "  --fp16       use FP16 inference\n"
         "  --paged      use paged KV cache\n"
-        "  --arch NAME  override architecture\n",
+        "  --arch NAME  override architecture\n"
+        "  --neuralOS   enable NeuralOS runtime\n",
         prog);
 }
 
@@ -432,6 +461,7 @@ int main(int argc, char** argv) {
     int n_threads = 4;
     bool use_fp16 = false;
     bool use_paged = false;
+    bool use_neuralOS = false;
     const char* arch_override = nullptr;
 
     for (int i = 2; i < argc; ++i) {
@@ -445,6 +475,8 @@ int main(int argc, char** argv) {
             use_paged = true;
         else if (std::strcmp(argv[i], "--arch") == 0 && i + 1 < argc)
             arch_override = argv[++i];
+        else if (std::strcmp(argv[i], "--neuralOS") == 0)
+            use_neuralOS = true;
     }
 
     std::signal(SIGINT, sig_handler);
@@ -490,6 +522,21 @@ int main(int argc, char** argv) {
         (model->architecture.empty() ? "llama" : model->architecture.c_str());
     state.use_fp16 = use_fp16;
     state.use_paged = use_paged;
+    state.use_neuralOS = use_neuralOS;
+
+    /* Phase 43: Initialize NeuralOS runtime if enabled */
+    if (use_neuralOS) {
+        state.nos_kv = std::make_unique<nf::PagedKVCache>();
+        state.nos_kv->init(512, 16, model->n_layers,
+                           model->n_kv_heads ? model->n_kv_heads : model->n_heads,
+                           model->dim / model->n_heads);
+        state.nos_sched = std::make_unique<nf::RequestScheduler>();
+        state.nos_runtime = std::make_unique<neuralOS::L2::NeuralOSRuntime>(
+            state.nos_kv.get(), state.nos_sched.get());
+        state.nos_loop = std::make_unique<neuralOS::L2::BatchInferenceLoop>(
+            state.nos_runtime.get(), state.nos_kv.get(), state.nos_sched.get());
+        std::fprintf(stderr, "[nf_serve] NeuralOS runtime enabled\n");
+    }
 
     nf_metrics_reset();
 

@@ -14,9 +14,9 @@
 #ifndef NF_MODEL_CONFIG_HPP
 #define NF_MODEL_CONFIG_HPP
 
-#include "neurofabric/abi/neuro_fabric_abi.h"
-#include "neurofabric/abi/neuro_buffer_abi.h"
-#include "neurofabric/engine/PipelineEngine.hpp"
+#include "neuralOS/ddi/neuro_fabric_abi.h"
+#include "neuralOS/ddi/neuro_buffer_abi.h"
+#include "neuralOS/kernel/PipelineEngine.hpp"
 #include "kv_cache_policy.hpp"
 
 #include <cstdint>
@@ -57,6 +57,7 @@ struct ModelConfig {
 
     const nf_kv_cache_config* kv_cfg = nullptr;
     const char* arch_override        = nullptr;  /* nullptr = auto-detect */
+    bool use_neuralOS                = false;    /* Phase 43: enable NeuralOS runtime */
 };
 
 /* ================================================================== */
@@ -123,6 +124,17 @@ struct BlockAllocator {
 
     uint32_t num_free() const { return free_top; }
     uint32_t num_used() const { return num_blocks - free_top; }
+
+    /* Phase 36: CoW — duplicate a block with ref_count=1.
+     * Returns new physical block index, or INVALID if OOM. */
+    uint32_t cow_copy_block(uint32_t src_idx) {
+        if (src_idx >= num_blocks) return NF_PAGED_INVALID_BLOCK;
+        uint32_t dst = alloc_block();
+        if (dst == NF_PAGED_INVALID_BLOCK) return dst;
+        block_meta[dst].num_filled = block_meta[src_idx].num_filled;
+        /* Caller is responsible for copying actual KV data */
+        return dst;
+    }
 };
 
 struct SequenceKV {
@@ -241,6 +253,44 @@ struct PagedKVCache {
         }
     }
 
+    /* Phase 36: CoW fork — create a new sequence sharing physical blocks.
+     * All shared blocks get ref_count incremented. Writes trigger CoW. */
+    uint32_t fork_sequence(uint32_t src_seq_idx) {
+        if (src_seq_idx >= num_sequences) return UINT32_MAX;
+        uint32_t dst = alloc_sequence();
+        if (dst == UINT32_MAX) return dst;
+        auto& src = sequences[src_seq_idx];
+        auto& d   = sequences[dst];
+        d.num_tokens = src.num_tokens;
+        d.num_logical_blocks = src.num_logical_blocks;
+        for (uint32_t i = 0; i < src.num_logical_blocks; ++i) {
+            uint32_t phys = src.block_table[i];
+            if (phys != NF_PAGED_INVALID_BLOCK) {
+                allocator.ref(phys);  /* shared: bump refcount */
+            }
+            d.block_table[i] = phys;
+        }
+        return dst;
+    }
+
+    /* Phase 36: CoW write — if block is shared (ref>1), copy-on-write.
+     * Returns the (possibly new) physical block index for writing. */
+    uint32_t cow_write_block(uint32_t seq_idx, uint32_t logical_block) {
+        if (seq_idx >= num_sequences) return NF_PAGED_INVALID_BLOCK;
+        auto& seq = sequences[seq_idx];
+        if (logical_block >= seq.num_logical_blocks) return NF_PAGED_INVALID_BLOCK;
+        uint32_t phys = seq.block_table[logical_block];
+        if (phys == NF_PAGED_INVALID_BLOCK) return NF_PAGED_INVALID_BLOCK;
+        if (allocator.block_meta[phys].ref_count > 1) {
+            uint32_t new_phys = allocator.cow_copy_block(phys);
+            if (new_phys == NF_PAGED_INVALID_BLOCK) return new_phys;
+            allocator.unref(phys);
+            seq.block_table[logical_block] = new_phys;
+            return new_phys;
+        }
+        return phys;
+    }
+
     /* Get the flat block table for GPU upload (logical → physical). */
     void fill_block_table(uint32_t seq_idx, uint32_t* out,
                           uint32_t max_blocks) const {
@@ -259,7 +309,8 @@ struct PagedKVCache {
 /* ================================================================== */
 
 enum class RequestState : uint8_t {
-    QUEUED, PREFILL, DECODE, COMPLETE, CANCELLED
+    QUEUED, PREFILL, DECODE, COMPLETE, CANCELLED,
+    PREEMPTED  /* Phase 36: suspended by CFS */
 };
 
 struct InferenceRequest {
@@ -283,6 +334,10 @@ struct InferenceRequest {
     void (*on_token)(uint32_t req_id, int32_t token, void* user_data) = nullptr;
     void (*on_complete)(uint32_t req_id, void* user_data) = nullptr;
     void* user_data = nullptr;
+
+    /* Phase 36: VTC (Virtual Token Counter) for CFS scheduling */
+    uint64_t vtc_runtime     = 0;   /* virtual tokens consumed (weighted) */
+    uint64_t vtc_weight      = 1;   /* scheduling weight (higher = more share) */
 };
 
 struct BatchDescriptor {
@@ -429,6 +484,10 @@ struct SpeculativeConfig {
     uint32_t draft_layers   = 0;   /* number of layers for draft model (0 = disabled) */
     uint32_t num_speculative = 4;  /* tokens to speculate per step */
     float    acceptance_threshold = 0.0f;  /* 0 = standard rejection sampling */
+
+    /* Phase 36: Tree-based speculative decoding */
+    uint32_t tree_width     = 1;   /* branches per verification point (1 = linear chain) */
+    uint32_t max_depth      = 8;   /* maximum speculation depth */
 };
 
 /**

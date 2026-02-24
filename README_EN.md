@@ -2,20 +2,20 @@
   <h1 align="center">⚡️ NeuroFabric</h1>
   <p align="center">
     <strong>A Microkernel Heterogeneous LLM Inference Engine for Edge &amp; Cloud</strong><br/>
-    <em>Zero-vptr Hourglass ABI · 50+ Metal GPU Kernels · PagedAttention · Speculative Decoding · Distributed DAG Scheduling</em>
+    <em>Zero-vptr Hourglass ABI · 59 Metal GPU Kernels · NeuralOS 5-Layer Architecture · PagedAttention · Speculative Decoding · Distributed DAG Scheduling</em>
   </p>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus" alt="C++20"/>
   <img src="https://img.shields.io/badge/ABI-C11_Zero--vptr-green" alt="C11 ABI"/>
-  <img src="https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake" alt="CMake"/>
+  <img src="https://img.shields.io/badge/CMake-3.21%2B-064F8C?logo=cmake" alt="CMake"/>
   <img src="https://img.shields.io/badge/Apple_Silicon-Metal_GPU-black?logo=apple" alt="Apple Silicon"/>
   <img src="https://img.shields.io/badge/RK3588-NPU_Zero--Copy-red?logo=arm" alt="RK3588"/>
   <img src="https://img.shields.io/badge/License-Apache_2.0-orange" alt="License"/>
-  <img src="https://img.shields.io/badge/Tests-39%2F39_Green-brightgreen" alt="Tests"/>
-  <img src="https://img.shields.io/badge/Metal_Kernels-53-blueviolet" alt="Metal Kernels"/>
-  <img src="https://img.shields.io/badge/LOC-29.8K-lightgrey" alt="LOC"/>
+  <img src="https://img.shields.io/badge/Tests-63%2F63_Green-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/Metal_Kernels-59-blueviolet" alt="Metal Kernels"/>
+  <img src="https://img.shields.io/badge/LOC-~35K-lightgrey" alt="LOC"/>
 </p>
 
 <p align="center">
@@ -30,17 +30,27 @@ Most inference engines are monoliths — welded to one vendor SDK, one memory mo
 
 The same binary runs a 7B LLaMA on Apple Metal at ~45 tok/s (fused FP16), drives Rockchip NPU zero-copy inference on an RK3588, or splits a DAG across both over TCP — with the scheduler routing sub-graphs to the optimal accelerator automatically.
 
-**What ships today (Phase 32):**
+**What ships today (v0.2.1, Phase 40):**
 
 - Full autoregressive LLM inference: LLaMA, Mistral, Phi-3 architectures from GGUF
-- 53 Metal compute kernels (FP32 + FP16 + fused dequant×matmul)
+- 59 Metal compute kernels (FP32 + FP16 + fused dequant×matmul)
 - 10 quantization formats (Q4_0 through Q6_K) with FP16 dequant variants
+- GQA (Grouped-Query Attention) with configurable head ratios
+- MoE (Mixture of Experts) routing with top-K selection
 - PagedAttention with O(1) block allocation, 64 concurrent sequences
 - Continuous batching request scheduler with preemption
 - Speculative decoding framework (draft/verify with KV rollback)
 - BPE tokenizer, temperature/top-k/top-p sampling, streaming output
+- Chat templates: ChatML, Llama, Mistral, Phi-3
+- HTTP server (OpenAI-compatible, SSE streaming)
+- NeuralOS 5-layer OS-like architecture (vMMU, CFS, SpecEngine, VirtualBus)
+- Multi-level NFIR compiler (High→Low IR, fusion pass, memory plan)
+- ONNX frontend parser (zero-dependency)
+- Mesh coordinator, async dataflow, KV migration, CXL memory
+- Structured metrics/logging with C-ABI callbacks
 - Python ctypes binding (zero-dependency)
 - Distributed edge-cloud DAG scheduling over TCP
+- CI pipeline: macOS (Release/Debug) + Linux (Release)
 
 ---
 
@@ -70,7 +80,7 @@ Any node can be tagged `NF_TASK_REMOTE` for transparent TCP routing to edge work
 
 On RK3588: `rknn_create_mem()` → CMA DMA-BUF fd → `rknn_set_io_mem()` → NPU reads directly from CMA. No `memcpy`. On Apple Silicon: unified memory means the GPU sees the same virtual address as the CPU. The buffer abstraction (`nf_buffer_ops`) hides this behind a single `map`/`unmap`/`cache_sync` interface with explicit dirty tracking.
 
-Six memory domains: `CPU`, `UNIFIED` (Apple coherent), `DMA_BUF` (RK3588 CMA), `DEVICE` (VRAM), `MMAP` (read-only weights), `EXTERNAL` (Vulkan/EGL import).
+Eight memory domains: `CPU`, `UNIFIED` (Apple coherent), `DMA_BUF` (RK3588 CMA), `DEVICE` (VRAM), `MMAP` (read-only weights), `EXTERNAL` (Vulkan/EGL import), `CXL`, `CXL_SHARED` (planetary compute mesh).
 
 ### 🔥 Production LLM Inference Stack
 
@@ -85,6 +95,27 @@ The stack: GGUF v2/v3 parser → multi-arch DAG builder (strategy pattern) → P
 ---
 
 ## Architecture
+
+### NeuralOS 5-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ L1  User Space      — Neural Compiler (NFIR, ONNX, fusion/memory passes)│
+├─────────────────────────────────────────────────────────────────────────┤
+│ L2  Kernel Space    — C++20 state machine (vMMU, CFS, SpecEngine,       │
+│                        VirtualBus, PipelineEngine, ContextHub)           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L3  Syscall Boundary — Zero-vptr DDI contract (8 C11 ABI headers)       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L4  Driver Space    — Pluggable drivers (Metal 59 kernels, RKNN DMA-BUF,│
+│                        Network/RDMA)                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L5  Compute Mesh    — Planetary compute mesh (mesh coordinator, async   │
+│                        dataflow, KV migration, CXL)                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Runtime Architecture
 
 ```mermaid
 graph TB
@@ -106,7 +137,7 @@ graph TB
     end
 
     subgraph "Plugin Layer (C11 ABI Boundary)"
-        MTL["🍎 Metal Plugin<br/>53 MSL kernels · PSO hash registry<br/>FP16 pipeline · fused dequant×matmul"]
+        MTL["🍎 Metal Plugin<br/>59 MSL kernels · PSO hash registry<br/>FP16 pipeline · fused dequant×matmul"]
         RKNN["🔴 RKNN Plugin<br/>DMA-BUF zero-copy · NPU dispatch"]
         NET["🌐 Network Plugin<br/>TCP proxy · binary wire protocol · CRC32C"]
     end
@@ -140,17 +171,17 @@ graph TB
 ### Memory Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   nf_buffer (opaque handle)              │
-│                   nf_buffer_ops (C fn-ptr vtable)        │
-├──────────┬──────────┬──────────┬──────────┬─────────────┤
-│   CPU    │ Unified  │ DMA-BUF  │  MMAP    │  External   │
-│ malloc() │ Apple    │ RK3588   │ weights  │ Vulkan/EGL  │
-│          │ coherent │ CMA fd   │ read-only│             │
-├──────────┴──────────┴──────────┴──────────┴─────────────┤
-│  cache_sync: flush (CPU→dev) / invalidate (dev→CPU)     │
-│  Apple: no-op (HW coherent)  RK3588: DMA_BUF_IOCTL_SYNC│
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   nf_buffer (opaque handle)                              │
+│                   nf_buffer_ops (C fn-ptr vtable)                        │
+├──────────┬──────────┬──────────┬──────────┬─────────────┬──────┬────────┤
+│   CPU    │ Unified  │ DMA-BUF  │  MMAP    │  External   │ CXL  │CXL_SHAR│
+│ malloc() │ Apple    │ RK3588   │ weights  │ Vulkan/EGL  │      │  ED    │
+│          │ coherent │ CMA fd   │ read-only│             │      │        │
+├──────────┴──────────┴──────────┴──────────┴─────────────┴──────┴────────┤
+│  cache_sync: flush (CPU→dev) / invalidate (dev→CPU)                     │
+│  Apple: no-op (HW coherent)  RK3588: DMA_BUF_IOCTL_SYNC                │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### ABI Layer Stack
@@ -158,8 +189,12 @@ graph TB
 ```
 Layer 4: nf_c_api.h              Pure C FFI surface (Python ctypes, other languages)
 Layer 3: neuro_scheduler_abi.h   DAG task graph, async futures, ContextHub, eviction policies
-Layer 2: neuro_buffer_abi.h      Buffer ops, zero-copy, cache coherency, 6 memory domains
+         neuro_ddi.h              DDI async completion, metrics callbacks
+         metrics.h                Structured logging/metrics with C-ABI callbacks
+Layer 2: neuro_buffer_abi.h      Buffer ops, zero-copy, cache coherency, 8 memory domains
 Layer 1: neuro_fabric_abi.h      Provider vtable, opaque handles, dtype enum (16 types), status codes
+         neuro_ir_format.h        NFIR binary format
+         neuro_network_protocol.h Binary wire protocol, CRC32C, chunked transport
 ```
 
 ---
@@ -183,7 +218,7 @@ git clone https://github.com/anthropics/neurofabric.git && cd neurofabric
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(sysctl -n hw.ncpu)
 
-# Verify — 39 tests
+# Verify — 63 tests
 ctest --test-dir build --output-on-failure
 ```
 
@@ -215,12 +250,11 @@ cmake --build build -j$(nproc)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `NF_BUILD_TESTS` | `ON` | Build 39 unit/integration tests |
+| `NF_BUILD_TESTS` | `ON` | Build 63 unit/integration tests |
 | `NF_BUILD_TOOLS` | `ON` | Build `nf_node_cli`, `nf_generate` |
 | `NF_PLUGIN_METAL` | Auto | Apple Silicon → ON |
 | `NF_PLUGIN_RKNN` | Auto | Linux aarch64 → ON |
 | `NF_PLUGIN_NETWORK` | `ON` | TCP distributed transport |
-| `NF_BUILD_EXAMPLES` | `ON` | Example programs |
 
 ---
 
@@ -260,7 +294,7 @@ print(f"Latency: {session.last_step_us():.1f} µs")
 ### 4. C++ API
 
 ```cpp
-#include <neurofabric/engine/PipelineEngine.hpp>
+#include <neuralOS/kernel/PipelineEngine.hpp>
 #include "model/gguf_loader.hpp"
 #include "model/llama_dag_builder.hpp"
 
@@ -334,7 +368,7 @@ sess.step().get();  // blocks until DAG completes
 
 ---
 
-## Metal Kernel Inventory (53 PSOs)
+## Metal Kernel Inventory (59 PSOs)
 
 <details>
 <summary>Click to expand full kernel table</summary>
@@ -399,50 +433,93 @@ Architecture is auto-detected from GGUF metadata, or overridden with `--arch`:
 ## Project Structure
 
 ```
-neurofabric/                              29,826 LOC · 88 files · 39 tests
+neurofabric/                              ~35K LOC · 64 tests
 ├── core/
-│   ├── include/neurofabric/
-│   │   ├── neuro_fabric_abi.h            Layer 1: provider vtable, opaque handles
-│   │   ├── neuro_buffer_abi.h            Layer 2: buffer ops, zero-copy, 6 memory domains
-│   │   ├── neuro_scheduler_abi.h         Layer 3: DAG tasks, futures, ContextHub
-│   │   ├── nf_c_api.h                    Layer 4: pure C FFI for Python
-│   │   ├── PipelineEngine.hpp            Kahn toposort, thread pool, Session
-│   │   ├── ContextHub.hpp                Radix-tree KV cache, shared_mutex
-│   │   ├── TensorView.hpp               C++20 RAII tensor wrapper
-│   │   ├── ProfileTrace.hpp             Per-kernel GPU profiling
-│   │   └── GraphBuilder.hpp             .nfir → DAG construction
+│   ├── include/neuralOS/                 NeuralOS 5-layer canonical headers
+│   │   ├── compiler/                  NFIR, fusion, memory plan (5 files)
+│   │   │   ├── nfir.hpp                  Multi-level IR base
+│   │   │   ├── nfir_high.hpp             High-level IR (ONNX-like)
+│   │   │   ├── nfir_low.hpp              Low-level IR (device-specific)
+│   │   │   ├── fusion_pass.hpp           Operator fusion pass
+│   │   │   └── memory_plan_pass.hpp      Memory planning pass
+│   │   ├── kernel/                    vMMU, CFS, SpecEngine, VirtualBus + engine (9 files)
+│   │   │   ├── vMMU.hpp                  Virtual memory management (CoW, page-out, radix)
+│   │   │   ├── CFS.hpp                   Completely Fair Scheduler (VTC, preemption)
+│   │   │   ├── SpecEngine.hpp            Speculative execution engine (tree search)
+│   │   │   ├── VirtualBus.hpp            Virtual bus (topology, routing)
+│   │   │   ├── PipelineEngine.hpp        Kahn toposort, thread pool, Session
+│   │   │   ├── ContextHub.hpp            Radix-tree KV cache, shared_mutex
+│   │   │   ├── TensorView.hpp            C++20 RAII tensor wrapper
+│   │   │   ├── ProfileTrace.hpp          Per-kernel GPU profiling
+│   │   │   └── GraphBuilder.hpp          .nfir → DAG construction
+│   │   ├── ddi/                       C11 ABI headers + DDI facade (9 files)
+│   │   │   ├── ddi.hpp                   DDI facade (C++ wrapper)
+│   │   │   ├── neuro_fabric_abi.h        Provider vtable, opaque handles
+│   │   │   ├── neuro_buffer_abi.h        Buffer ops, zero-copy, 8 memory domains
+│   │   │   ├── neuro_scheduler_abi.h     DAG tasks, futures, ContextHub
+│   │   │   ├── neuro_ddi.h               DDI async completion
+│   │   │   ├── metrics.h                 Structured logging/metrics
+│   │   │   ├── nf_c_api.h                Pure C FFI for Python
+│   │   │   ├── neuro_ir_format.h         NFIR binary format
+│   │   │   └── neuro_network_protocol.h  Binary wire protocol
+│   │   ├── driver/                    Driver capability registry (1 file)
+│   │   │   └── driver_registry.hpp       Driver capability registry
+│   │   └── mesh/                      Topology, mesh, dataflow, KV migration, CXL (5 files)
+│   │       ├── topology.hpp              Network topology
+│   │       ├── mesh_coordinator.hpp      Mesh coordinator
+│   │       ├── async_dataflow.hpp        Async dataflow (Pathways-style)
+│   │       ├── kv_migration.hpp          KV cache migration
+│   │       └── cxl_memory.hpp            CXL memory domain
+│   ├── include/neurofabric/              Backward-compat forwarding headers
+│   │   ├── abi/*.h → neuralOS/ddi/    8 ABI headers
+│   │   └── engine/*.hpp → neuralOS/kernel/  5 engine headers
 │   └── src/                              API impl, graph builder, platform loaders
 ├── plugins/
 │   ├── metal/src/
-│   │   ├── metal_provider.mm             2,707 LOC — 53 MSL kernels, PSO registry
+│   │   ├── metal_provider.mm             59 MSL kernels, PSO registry
 │   │   └── metal_pso_registry.h          Enum-indexed PSO table
 │   ├── rknn/src/rknn_provider.cpp        DMA-BUF zero-copy NPU dispatch
-│   └── network/src/                      TCP proxy, binary wire protocol
-├── tools/
-│   ├── nf_generate.cpp                   End-to-end text generation CLI
-│   ├── nf_node_cli.cpp                   Coordinator/worker/local CLI
+│   └── network/src/                      TCP proxy, binary wire protocol, RDMA transport
+├── apps/
+│   ├── nf_generate.cpp                   End-to-end text generation CLI + chat mode
+│   ├── nf_serve.cpp                      HTTP server (OpenAI-compatible, SSE streaming)
+│   └── nf_node_cli.cpp                   Coordinator/worker/local CLI
+├── model/
 │   ├── model/                            Model header-only libraries
-│   │   ├── llama_dag_builder.hpp         1,694 LOC — multi-arch DAG construction
+│   │   ├── llama_dag_builder.hpp         Multi-arch DAG construction
 │   │   ├── model_config.hpp              ModelConfig, PagedKVCache, RequestScheduler
 │   │   ├── kv_cache_policy.hpp           None/Sliding/LRU/Paged eviction + INT8 KV
-│   │   ├── arch_registry.hpp             Strategy pattern for LLaMA/Mistral/Phi-3
+│   │   ├── arch_registry.hpp             Strategy pattern for LLaMA/Mistral/Phi-3/Qwen2/Gemma/Mixtral
 │   │   ├── gguf_loader.hpp               GGUF v2/v3 parser, mmap weights
 │   │   ├── tokenizer.hpp                 BPE tokenizer (byte-fallback)
 │   │   ├── sampler.hpp                   Temperature / top-k / top-p / repeat penalty
-│   │   ├── quant_registry.hpp            Quantization format registry
+│   │   ├── chat_template.hpp             ChatML/Llama/Mistral/Phi-3 template parser
 │   │   └── trace_export.hpp              Chrome trace export
-│   ├── cross_compile/                    Cross-compilation toolchain
-│   │   ├── build.sh / deploy.sh          Build & deploy scripts
-│   │   ├── prepare_sysroot.sh            Sysroot preparation
-│   │   ├── toolchains/                   CMake toolchain files
-│   │   ├── boards/                       Board configs (RK3588, RPi4, Ascend)
-│   │   ├── devices/                      Device deploy configs
-│   │   └── docker/                       Docker cross-compile environments
-│   └── nf_compiler/export_nfir.py        Python AOT compiler
+│   └── nf_compiler/                      Python AOT compiler
+│       ├── export_nfir.py                NFIR exporter
+│       └── onnx/                         ONNX frontend (zero-dependency)
+│           ├── onnx_parser.hpp           ONNX protobuf parser
+│           ├── onnx_to_nfir.hpp          ONNX → NFIR converter
+│           └── onnx_op_map.hpp           ONNX operator mapping
+├── tools/
+│   └── nf_bench.cpp                      Benchmark suite
+├── infra/cross_compile/                  Cross-compilation toolchain
+│   ├── build.sh / deploy.sh              Build & deploy scripts
+│   ├── prepare_sysroot.sh                Sysroot preparation
+│   ├── toolchains/                       CMake toolchain files
+│   ├── boards/                           Board configs (RK3588, RPi4, Ascend)
+│   ├── devices/                          Device deploy configs
+│   └── docker/                           Docker cross-compile environments
 ├── python/
 │   ├── neurofabric.py                    Zero-dependency ctypes binding
 │   └── autoregressive_inference.py       Python inference example
-├── tests/                                39 test files, 12,742 LOC
+├── tests/                                64 test files, organized by layer
+│   ├── compiler/                      Compiler tests (4)
+│   ├── kernel/                        Kernel subsystem tests (17)
+│   ├── ddi/                           ABI / DDI tests (9)
+│   ├── driver/                        Driver / Metal / RKNN tests (20)
+│   ├── mesh/                          Mesh tests (5)
+│   └── model/                            Model layer tests (9)
 └── docs/
     └── ARCHITECTURE.md                   Full architecture document (Chinese)
 ```
@@ -451,17 +528,19 @@ neurofabric/                              29,826 LOC · 88 files · 39 tests
 
 ## Evolution Roadmap
 
-NeuroFabric has evolved through 32 phases. Here's where it's headed:
+NeuroFabric has evolved through 40 phases. Here's the journey:
 
-| Phase | Direction | Description |
-|-------|-----------|-------------|
-| **Done** | Phases 1–32 | Hourglass ABI → DAG engine → Metal/RKNN/Network plugins → GGUF ingestion → multi-layer Transformer → SIMD matmul → K-quant → 7B validation → FP16 pipeline → PSO registry → fused ops → sliding window → multi-arch → PagedAttention → continuous batching → speculative decoding |
-| 33 | Tensor Parallelism | Multi-GPU weight sharding across Metal devices |
-| 34 | Pipeline Parallelism | Layer-level cross-device splitting |
-| 35 | INT8 KV Cache | Quantized KV cache for 2× context length at same memory |
-| 36 | ONNX Import | ONNX → DAG converter for vision/audio models |
-| 37 | LoRA Adapters | Runtime low-rank adaptation hot-swap |
-| 38 | Whole-Graph Compiler | End-to-end optimization: operator fusion, memory planning, scheduling |
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1–32 | ✅ Done | Hourglass ABI → DAG engine → Metal/RKNN/Network plugins → GGUF ingestion → multi-layer Transformer → SIMD matmul → K-quant → 7B validation → FP16 pipeline → PSO registry → fused ops → sliding window → multi-arch → PagedAttention → continuous batching → speculative decoding |
+| 33 | ✅ Done | SIMD matmul fix, Qwen2/Gemma/Mixtral arch registry, PSO warmup, GELU kernel |
+| 34–35 | ✅ Done | GQA (Grouped-Query Attention), MoE routing, streaming, chat templates, HTTP server, metrics, CI |
+| 36 | ✅ Done | NeuralOS 5-layer facade: vMMU (CoW/page-out/radix), CFS (VTC/preemption), SpecEngine (tree search), VirtualBus (topology/routing) |
+| 37 | ✅ Done | Multi-level NFIR (High→Low IR), fusion pass, memory plan pass, ONNX frontend, DDI async completion, RDMA transport abstraction |
+| 38 | ✅ Done | Mesh coordinator, async dataflow (Pathways-style), KV cache migration, CXL memory domain |
+| 39 | ✅ Done | Physical directory unification: ABI→ddi, engine→kernel, tests→semantic subdirs, forwarding headers for backward compatibility |
+| 40 | 🚧 Current | Project cleanup + documentation alignment with NeuralOS 5-layer architecture |
+| 41+ | 🔮 Future | Tensor parallelism (multi-GPU weight sharding), pipeline parallelism (layer-level splitting), INT8 KV cache, LoRA adapters, whole-graph compiler optimization |
 
 ---
 
